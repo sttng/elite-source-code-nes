@@ -10,6 +10,7 @@ PYTHON?=python
 #
 #                         pal (default)
 #                         ntsc
+#                         ntsc-hw (NTSC variant fixed for real NTSC hardware)
 #
 #   commander=max       Start with a maxed-out commander
 #
@@ -34,6 +35,7 @@ PYTHON?=python
 # _VARIANT
 #   1 = NTSC (default)
 #   2 = PAL
+#   3 = NTSC for real NTSC hardware (no reference binaries, so not verified)
 #
 # _MAX_COMMANDER
 #   TRUE  = Maxed-out commander
@@ -61,6 +63,11 @@ ifeq ($(variant), ntsc)
   variant-number=1
   folder=ntsc
   suffix=-ntsc
+else ifeq ($(variant), ntsc-hw)
+  variant-number=3
+  folder=
+  suffix=-ntsc-hw
+  verify=no
 else
   variant-number=2
   folder=pal

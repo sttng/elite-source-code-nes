@@ -51,6 +51,7 @@ See the [introduction](#introduction) for more information, or jump straight int
 
   * [Building the PAL variant](#building-the-pal-variant)
   * [Building the NTSC variant](#building-the-ntsc-variant)
+  * [Building the NTSC hardware variant](#building-the-ntsc-hardware-variant)
   * [Differences between the variants](#differences-between-the-variants)
 
 ## Introduction
@@ -235,6 +236,8 @@ This repository contains the source code for two different variants of NES Elite
 
 * The NTSC variant from Ian Bell's personal website
 
+* An NTSC hardware variant, which is the NTSC variant with its NMI timings reworked so it runs on a real NTSC console (this is not an original release, so it has no reference binaries)
+
 By default the build process builds the PAL variant, but you can build a specified variant using the `variant=` build parameter.
 
 ### Building the PAL variant
@@ -332,6 +335,52 @@ You can see the differences between the variants by searching the source code fo
 * The code for detecting double-taps of the B button when choosing buttons from the icon bar is a bit simpler in the NTSC version.
 
 It's worth noting that the NTSC variant doesn't actually work on an NTSC machine. The NMI timings have been changed to work with some (but not all) emulators in NTSC mode, but it isn't a full NTSC conversion, it's an NTSC emulation (as per the scroll text).
+
+### Building the NTSC hardware variant
+
+You can build a version of the NTSC variant that runs on a real NTSC console by appending `variant=ntsc-hw` to the `make` command, like this on Windows:
+
+```
+make.bat variant=ntsc-hw
+```
+
+or this on a Mac or Linux:
+
+```
+make variant=ntsc-hw
+```
+
+This will produce a file called `ELITE-ntsc-hw.NES` in the `5-compiled-rom-images` folder. As this isn't an original release there are no reference binaries, so the build isn't verified. You can see all the changes by searching the source code for `_NTSC_HW`.
+
+The NMI handler in NES Elite blanks the screen, sends as much data to the PPU as its cycle budget allows, and then re-enables the screen at a fixed point. The PAL release has a 70-line VBlank and re-enables the screen on scanline 7 (hence the `YPAL` margin), while the NTSC variant's budget of 6797 cycles is nearly three times the length of a real NTSC VBlank (20 lines, about 2270 cycles), so on real hardware it re-enables the screen around scanline 50, which pushes the picture down the screen, breaks the icon bar split and loses the bottom of the dashboard.
+
+The NTSC hardware variant makes these changes to fit into the NTSC VBlank:
+
+* The NMI cycle budget is `NMI_CYCLES_NTSC_HW`, so the screen is re-enabled at the same point as the PAL release, near the start of scanline 7, which is in the overscan area of an NTSC TV. Measured on a cycle-accurate emulator across title, demo, combat, docked screens and flight, the restart always falls between line 6 dot 334 and line 7 dot 192, well inside the safe window of line 6 dot 257 to line 7 dot 255.
+
+* `SetScrollNTSC` loads the PPU address register directly with a fine y-scroll of 6 before the screen is re-enabled, as the pre-render line has passed with rendering disabled. This means nametable row r appears on scanline r + 1, which is the screen layout that the NTSC variant's coordinates (`YPAL` = 0) are designed for, so the whole dashboard fits inside the visible area of an NTSC TV.
+
+* `SendBarNamesNTSC` and `SendBarPattsNTSC` split the icon bar update across two VBlanks. In the original code, sending the icon bar's nametable entries and its first batch of patterns has to happen in a single VBlank, which doesn't fit into an NTSC VBlank, so the game would hang the first time it updated the icon bar.
+
+* The point at which the NMI handler swaps the visible and hidden bitplanes is `NAME_FLIP_NTSC_HW` (12 batches rather than 48), as the swap relies on the rest of the nametable being sent in the same VBlank. With the original value, the space view shows a half-drawn frame for one VBlank on most redraws.
+
+* `MakeSoundsNTSC` skips one in every six calls to the sound routines, and the note periods in `noteFrequency` are scaled by the ratio of the CPU clocks, so music and sound effects play at the same speed and pitch as the PAL release.
+
+* The NMI timer counts 60 VBlanks per second rather than 50, so the combat demo timer reports real seconds.
+
+An NTSC VBlank only gives the NMI handler about a third of the PPU time that it gets on PAL, and NES Elite only moves the game on once each frame has been sent to the PPU, so on its own, fitting into the NTSC VBlank would make the game run at about 70% of PAL speed in combat. The NTSC hardware variant gets this time back, so the game runs faster than PAL:
+
+* In the space view, the NMI handler sends nametable rows 2 to 19 (576 bytes) for every frame, even though most rows are usually empty apart from the box edges, and this takes up most of the VBlank. `DrawEdgesScanNTSC` scans each frame's nametable buffer when it is handed over to the NMI handler, and `NamesRowCheck` only sends the rows that contain something in this frame, or contained something in the frame that was last sent to the same bitplane (so they get blanked out). The masks are reset whenever the nametables are written in other ways (`InvalidateRowMasks`) or a whole buffer is sent for a new view.
+
+* `SendNamesTail` and `SendPattsTail` keep sending data in batches of eight nametable entries or one pattern when there isn't enough time left in the VBlank for a full batch of 32 entries or three patterns, rather than wasting the rest of the VBlank.
+
+* The cycle costs that the NMI handler charges for the paths that are used in this variant have been measured with a cycle-accurate emulator and corrected where the original values were inaccurate, and `BurnFineNTSC` burns the last 0 to 31 cycles that the burn loop in `ClearBuffers` overshoots by, so the screen is re-enabled at a consistent point while the budget can be used right up to the end.
+
+In the combat demo, measured as iterations of the main flight loop per second on a cycle-accurate emulator, the PAL release manages 13.9, the NTSC hardware variant without these improvements manages 9.7, and with them it manages 16.3 (117% of the PAL release).
+
+To make room for the new code in the fixed bank, `DrawBoxEdges` and `FillMemory` are rewritten as loops (with `ClearSmallNTSC` replacing the computed jump into `FillMemory` that `ClearMemory` uses for blocks of fewer than 256 bytes), and the main-loop part of the row scanning lives in bank 3. The rest of the new code lives in bytes that are unused in the other variants, and the NMI handler code is at exactly the same addresses as in the NTSC variant. This is important because the cycle counts in the NMI handler depend on the exact layout of the code, as moving code can change page-crossing timings.
+
+The changes were verified on the Mesen emulator core, patched to log the scanline and dot of every PPU register write and to check, byte for byte, that every nametable row the NMI handler finishes sending matches the frame that was handed over to it. Across around 15,000 handovers covering the title screen, the combat demo, every docked screen, launching and flight, there were no mismatches and no PPU writes while the screen was being drawn.
 
 See the [accompanying website](https://elite.bbcelite.com/nes/releases.html) for a comprehensive list of differences between the variants.
 
