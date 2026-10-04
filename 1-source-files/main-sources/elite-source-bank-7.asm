@@ -503,7 +503,17 @@
  TYA
  PHA
 
+IF _NTSC_HW
+
+ JSR MakeSoundsNTSC     ; Call the MakeSounds routine to make the current sounds
+                        ; (via MakeSoundsNTSC, which skips one call in six so
+                        ; the music plays at the same speed as on PAL)
+
+ELSE
+
  JSR MakeSounds_b6      ; Call the MakeSounds routine to make the current sounds
+
+ENDIF
                         ; (music and sound effects)
 
  PLA                    ; Retrieve X and Y from the stack
@@ -555,7 +565,49 @@
 
  EQUB 10                ; There is no fourth language, so this byte is ignored
 
-IF _NTSC
+IF _NTSC_HW
+
+; ******************************************************************************
+;
+;       Name: MakeSoundsNTSC
+;       Type: Subroutine
+;   Category: Sound
+;    Summary: Make the current sounds, skipping one call in every six so that
+;             music and sound effects play at PAL speed on an NTSC console
+;
+; ------------------------------------------------------------------------------
+;
+; The music and sound effects are driven once per VBlank, and were written for
+; the 50Hz PAL release, so on a 60Hz NTSC console they would play 20% too fast.
+; Skipping every sixth call brings the rate back to 50 updates per second.
+;
+; We use unusedVariable as the counter, as it is zeroed in RES2 but is never
+; read by the original code. This routine lives in the space taken by unused
+; bytes in the other variants, so the rest of the bank stays where it is.
+;
+; ******************************************************************************
+
+.MakeSoundsNTSC
+
+ DEC unusedVariable     ; Decrement the counter, and if it is still positive,
+ BPL msnt1              ; jump to msnt1 to make the sounds as normal
+
+ LDA #5                 ; The counter has wrapped round, so reset it to 5 and
+ STA unusedVariable     ; return from the subroutine without making any sounds
+ RTS                    ; this time (so we make sounds on five calls out of six)
+
+.msnt1
+
+ JMP MakeSounds_b6      ; Make the current sounds, returning from the subroutine
+                        ; using a tail call
+
+ FOR I%, P%, MakeSoundsNTSC + 24    ; Pad with unused bytes so this block is
+  EQUB $FF                          ; the same size as in the NTSC variant
+ NEXT                               ; (25 bytes)
+
+ ASSERT P% = MakeSoundsNTSC + 25
+
+ELIF _NTSC
 
  EQUB $20, $20, $20     ; These bytes appear to be unused
  EQUB $20, $10, $00
@@ -1410,9 +1462,20 @@ ENDIF
 
 .SendBarPattsToPPUS
 
+IF _NTSC_HW
+
+ JMP SendBarPattsNTSC   ; Jump to SendBarPattsNTSC to send the pattern data for
+                        ; the icon bar to the PPU, returning from the subroutine
+                        ; using a tail call (this version splits the work into
+                        ; chunks that fit into the shorter NTSC VBlank)
+
+ELSE
+
  JMP SendBarPattsToPPU  ; Jump to SendBarPattsToPPU to send the pattern data for
                         ; the icon bar to the PPU, returning from the subroutine
                         ; using a tail call
+
+ENDIF
 
 ; ******************************************************************************
 ;
@@ -1427,9 +1490,21 @@ ENDIF
 
 .SendBarNamesToPPUS
 
+IF _NTSC_HW
+
+ JMP SendBarNamesNTSC   ; Jump to SendBarNamesNTSC to send the nametable
+                        ; entries for the icon bar to the PPU, returning from
+                        ; the subroutine using a tail call (this version splits
+                        ; the work into chunks that fit into the shorter NTSC
+                        ; VBlank)
+
+ELSE
+
  JMP SendBarNamesToPPU  ; Jump to SendBarNamesToPPU to send the nametable
                         ; entries for the icon bar to the PPU, returning from
                         ; the subroutine using a tail call
+
+ENDIF
 
 ; ******************************************************************************
 ;
@@ -1661,10 +1736,27 @@ ENDIF
                         ; number of the tile for which we are currently sending
                         ; nametable entries to the PPU, divided by 8
 
+IF _NTSC_HW
+
+ CMP #NAME_FLIP_NTSC_HW ; If A < NAME_FLIP_NTSC_HW, then we have only a few
+ BCC sbuf6              ; nametable entries left to send, so jump to sbuf6 to
+                        ; swap the hidden and visible bitplanes before sending
+                        ; the next batch of tiles
+                        ;
+                        ; The other variants use 48 here, as the swap relies
+                        ; on the remaining entries being sent in this VBlank,
+                        ; and the much shorter NTSC VBlank can only manage
+                        ; around a quarter of that, so with 48 the screen would
+                        ; show a half-updated frame for one VBlank
+
+ELSE
+
  CMP #48                ; If A < 48, then we have fewer than 48 * 8 = 384
  BCC sbuf6              ; nametable entries to send, so jump to sbuf6 to swap
                         ; the hidden and visible bitplanes before sending the
                         ; next batch of tiles
+
+ENDIF
 
  SUBTRACT_CYCLES 60     ; Subtract 60 from the cycle count
 
@@ -1714,7 +1806,17 @@ ENDIF
                         ; hide the bitplane we are updating from the screen, so
                         ; we don't corrupt the screen while updating it
 
+ IF _NTSC_HW
+
+ SUBTRACT_CYCLES 283    ; Subtract 283 from the cycle count (the NTSC hardware
+                        ; variant measures this more accurately than the
+                        ; original, which charges 298)
+
+ELSE
+
  SUBTRACT_CYCLES 298    ; Subtract 298 from the cycle count
+
+ENDIF
 
  LDA bitplaneFlags      ; Set A to the bitplane flags for bitplane 0
 
@@ -2197,8 +2299,17 @@ ENDIF
 
  ADD_CYCLES 359         ; Add 359 to the cycle count
 
+IF _NTSC_HW
+
+ JMP SendPattsTail      ; Jump to SendPattsTail to keep sending data in smaller
+                        ; batches (NTSC hardware variant)
+
+ELSE
+
  JMP spat30             ; Jump to part 6 to save progress for use in the next
                         ; VBlank and return from the subroutine
+
+ENDIF
 
 .spat12
 
@@ -2484,8 +2595,17 @@ ENDIF
 
  ADD_CYCLES 225         ; Add 225 to the cycle count
 
+IF _NTSC_HW
+
+ JMP SendPattsTail      ; Jump to SendPattsTail to keep sending data in smaller
+                        ; batches (NTSC hardware variant)
+
+ELSE
+
  JMP spat30             ; Jump to part 6 to save progress for use in the next
                         ; VBlank and return from the subroutine
+
+ENDIF
 
 .spat26
 
@@ -2825,6 +2945,17 @@ ENDIF
 
 .snam5
 
+IF _NTSC_HW
+
+ JMP NamesRowCheck      ; Jump to NamesRowCheck to skip any rows that don't need
+                        ; sending, and send the rest (NTSC hardware variant)
+
+ FOR I%, 1, 15          ; Pad with unused bytes so the rest of the bank stays at
+  EQUB $FF              ; the same address (the other variants have 18 bytes of
+ NEXT                   ; code here)
+
+ELSE
+
  SUBTRACT_CYCLES 393    ; Subtract 393 from the cycle count
 
  BMI snam6              ; If the result is negative, jump to snam6 to stop
@@ -2839,12 +2970,32 @@ ENDIF
                         ; keep sending PPU data in this VBlank, so jump to snam7
                         ; to do just that
 
+ENDIF
+
 .snam6
+
+IF _NTSC_HW
+
+ ADD_CYCLES 359         ; Add 359 to the cycle count (the NTSC hardware variant
+                        ; measures this more accurately than the original)
+
+ELSE
 
  ADD_CYCLES 349         ; Add 349 to the cycle count
 
+ENDIF
+
+IF _NTSC_HW
+
+ JMP SendNamesTail      ; Jump to SendNamesTail to keep sending data in smaller
+                        ; batches (NTSC hardware variant)
+
+ELSE
+
  JMP snam10             ; Jump to snam10 to save progress for use in the next
                         ; VBlank and return from the subroutine
+
+ENDIF
 
 .snam7
 
@@ -3035,6 +3186,105 @@ ENDIF
 ;
 ; ******************************************************************************
 
+IF _NTSC_HW
+
+                        ; In the NTSC hardware variant, this routine is
+                        ; rewritten as a loop rather than 80 unrolled stores,
+                        ; which frees up space for the fine-grained PPU upload
+                        ; routines below (SendBytes8, SendNamesTail and
+                        ; SendPattsTail) without moving any other code in the
+                        ; bank (the cycle counts in the NMI handler depend on
+                        ; the exact layout of the code)
+                        ;
+                        ; The loop is slower than the unrolled version, but
+                        ; this routine is only called once per screen redraw,
+                        ; so the difference is negligible
+
+.DrawBoxEdges
+
+ LDX drawingBitplane    ; If the drawing bitplane is 1, jump to boxe1 to draw
+ BNE boxe1              ; the box edges into nametable buffer 1
+
+ LDX #0                 ; We draw the edges in rows 0 to 7, 8 to 15 and 16 to
+                        ; 19 at the same time, using X as the offset of the
+                        ; row within each block of eight rows (0, 32, ... 224)
+
+.boxe0
+
+ LDA boxEdge2           ; Draw the left edge (column 0) in rows 0-7 and 8-15
+ STA nameBuffer0,X
+ STA nameBuffer0+8*32,X
+
+ LDA boxEdge1           ; Draw the right edge (column 1) in rows 0-7 and 8-15
+ STA nameBuffer0+1,X
+ STA nameBuffer0+8*32+1,X
+
+ CPX #4*32              ; Rows 16 to 19 only cover the first four offsets, so
+ BCS boxe2              ; skip the following for the rest
+
+ STA nameBuffer0+16*32+1,X  ; Draw the right and left edges in rows 16-19
+ LDA boxEdge2
+ STA nameBuffer0+16*32,X
+
+.boxe2
+
+ TXA                    ; Move on to the next row in each block
+ CLC
+ ADC #32
+ TAX
+
+ BNE boxe0              ; Loop back until we have done all eight offsets
+
+ BEQ boxe4              ; Jump to boxe4 to return (this BEQ is effectively a
+                        ; JMP as we just passed through a BNE)
+
+.boxe1
+
+ LDX #0                 ; Do the same for nametable buffer 1
+
+.boxe3
+
+ LDA boxEdge2
+ STA nameBuffer1,X
+ STA nameBuffer1+8*32,X
+
+ LDA boxEdge1
+ STA nameBuffer1+1,X
+ STA nameBuffer1+8*32+1,X
+
+ CPX #4*32
+ BCS boxe5
+
+ STA nameBuffer1+16*32+1,X
+ LDA boxEdge2
+ STA nameBuffer1+16*32,X
+
+.boxe5
+
+ TXA
+ CLC
+ ADC #32
+ TAX
+
+ BNE boxe3
+
+.boxe4
+
+ LDX drawingBitplane    ; Return with X and A set as in the original routine
+ LDA boxEdge2
+
+ RTS                    ; Return from the subroutine
+
+ IF P% < DrawBoxEdges + 271         ; Pad with unused bytes so this block is the
+  FOR I%, P%, DrawBoxEdges + 270    ; same size as the original DrawBoxEdges
+   EQUB $FF                         ; (271 bytes), checking first as FOR loops
+  NEXT                              ; always run at least once
+ ENDIF
+
+ ASSERT P% = DrawBoxEdges + 271
+
+ELSE
+
 .DrawBoxEdges
 
  LDX drawingBitplane    ; If the drawing bitplane is set to 1, jump to boxe1 to
@@ -3154,6 +3404,8 @@ ENDIF
                         ; the PPU to use nametable 0 and pattern table 0
 
  RTS                    ; Return from the subroutine
+
+ENDIF
 
 ; ******************************************************************************
 ;
@@ -3397,7 +3649,18 @@ ENDIF
                         ; palette table 0 when the PPU starts drawing the icon
                         ; bar
 
-IF _NTSC
+IF _NTSC_HW
+
+ LDA #HI(NMI_CYCLES_NTSC_HW)  ; Set cycleCount = NMI_CYCLES_NTSC_HW
+ STA cycleCount+1             ;
+ LDA #LO(NMI_CYCLES_NTSC_HW)  ; A real NTSC console only has 20 lines of VBlank
+ STA cycleCount               ; (around 2270 CPU cycles) compared to 70 on PAL,
+                              ; so we only have time to send roughly a third as
+                              ; much data to the PPU in each NMI, and the
+                              ; screen is re-enabled at a fixed point near the
+                              ; top of the frame (see NMI_CYCLES_NTSC_HW)
+
+ELIF _NTSC
 
  LDA #HI(6797)          ; Set cycleCount = 6797
  STA cycleCount+1       ;
@@ -3448,7 +3711,17 @@ ENDIF
  BNE inmi2              ; routine, then runningSetBank will be $FF, so jump to
                         ; inmi2 to skip the call to MakeSounds
 
+IF _NTSC_HW
+
+ JSR MakeSoundsNTSC     ; Call the MakeSounds routine to make the current sounds
+                        ; (via MakeSoundsNTSC, which skips one call in six so
+                        ; the music plays at the same speed as on PAL)
+
+ELSE
+
  JSR MakeSounds_b6      ; Call the MakeSounds routine to make the current sounds
+
+ENDIF
                         ; (music and sound effects)
 
  LDA nmiStoreA          ; Restore the values of A, X and Y that we stored at
@@ -3485,8 +3758,18 @@ ENDIF
  BNE nmit1              ; If it hasn't reached zero yet, jump to nmit1 to return
                         ; from the subroutine
 
+IF _NTSC_HW
+
+ LDA #60                ; Wrap the NMI timer round to start counting down from
+ STA nmiTimer           ; 60 once again, as it just reached zero (60 VBlanks is
+                        ; one second on an NTSC console)
+
+ELSE
+
  LDA #50                ; Wrap the NMI timer round to start counting down from
  STA nmiTimer           ; 50 once again, as it just reached zero
+
+ENDIF
 
  LDA nmiTimerLo         ; Increment nmiTimer(Hi Lo)
  CLC
@@ -3767,9 +4050,30 @@ ENDIF
  JSR SetPPURegisters    ; Set PPU_CTRL, PPU_ADDR and PPU_SCROLL for the current
                         ; hidden bitplane
 
+IF _NTSC_HW
+
+ LDA cycleCount         ; Add 150 to cycleCount
+ CLC                    ;
+ ADC #150               ; The other variants add 100 here, which means every
+                        ; NMI burns an extra 100 cycles before re-enabling the
+                        ; screen; the NTSC hardware variant only needs enough to
+                        ; stop the count ending up negative after a step that
+                        ; charges its cycles in advance (such as
+                        ; SendOtherBitplane), as a negative count would skip the
+                        ; burn loop in ClearBuffers and re-enable the screen
+                        ; at the wrong time (the most we can overdraw by is
+                        ; around 140 cycles, when a row doesn't fit and then
+                        ; neither does a batch of eight in SendNamesTail), so
+                        ; we add 150 here and include the extra in
+                        ; NMI_CYCLES_NTSC_HW
+
+ELSE
+
  LDA cycleCount         ; Add 100 ($0064) to cycleCount
  CLC
  ADC #$64
+
+ENDIF
  STA cycleCount
  LDA cycleCount+1
  ADC #$00
@@ -3878,6 +4182,19 @@ ENDIF
  LDA PPU_DATA
  LDA PPU_DATA
 
+IF _NTSC_HW
+
+ JMP SetScrollNTSC      ; Jump to SetScrollNTSC to set the scroll position for
+                        ; a real NTSC console, returning from the subroutine
+                        ; using a tail call
+
+ EQUB $FF, $FF, $FF     ; Pad with eight unused bytes so the rest of the bank
+ EQUB $FF, $FF, $FF     ; stays at exactly the same addresses as the NTSC
+ EQUB $FF, $FF          ; variant (the cycle counts in the NMI handler depend
+                        ; on page-crossing timings, so we don't move any code)
+
+ELSE
+
  LDA #8                 ; Set the horizontal scroll to 8, so the leftmost tile
  STA PPU_SCROLL         ; on each row is scrolled around to the right side
                         ;
@@ -3890,6 +4207,8 @@ ENDIF
  STA PPU_SCROLL
 
  RTS                    ; Return from the subroutine
+
+ENDIF
 
 ; ******************************************************************************
 ;
@@ -4005,9 +4324,24 @@ ENDIF
 
 .cbuf4
 
+IF _NTSC_HW
+
+ JMP BurnFineNTSC       ; Jump to BurnFineNTSC to burn the cycles that the
+                        ; last 32-cycle step overshot by, so the screen is
+                        ; re-enabled at a more consistent point (NTSC hardware
+                        ; variant only)
+
+ FOR I%, 1, 12          ; Pad with unused bytes so the rest of the bank stays
+  EQUB $FF              ; at the same address (the other variants have a
+ NEXT                   ; 12-byte ADD_CYCLES and a JMP here)
+
+ELSE
+
  ADD_CYCLES 65527       ; Add 65527 to the cycle count (i.e. subtract 9)
 
  JMP cbuf6              ; Jump to cbuf6 to return from the subroutine
+
+ENDIF
 
 .cbuf5
 
@@ -5012,7 +5346,541 @@ ENDIF
 
 .FillMemory
 
+IF _NTSC_HW
+
+                        ; In the NTSC hardware variant, this routine is a loop
+                        ; of 16 unrolled writes rather than 224 unrolled writes
+                        ; followed by FillMemory32Bytes, which frees up space
+                        ; for the NTSC routines below without moving any other
+                        ; code in the bank (this routine is only ever called
+                        ; with Y = 0, to fill a whole page)
+
+.fmem1
+
+ FILL_MEMORY 16         ; Fill 16 bytes at clearAddress(1 0) + Y with A
+
+ BNE fmem1              ; Loop back until Y wraps round to zero
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: SendBytes8
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Send eight bytes from dataForPPU(1 0) + Y to the PPU (NTSC
+;             hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; Returns:
+;
+;   Y                   Y is incremented by 8, and the Z flag is set if it has
+;                       wrapped round to 0 (so the caller can move on to the
+;                       next page of data)
+;
+; ******************************************************************************
+
+.SendBytes8
+
+ SEND_DATA_TO_PPU 8     ; Send 8 bytes from dataForPPU(1 0) + Y to the PPU
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: SendNamesTail
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Send nametable entries in batches of eight when there aren't
+;             enough cycles left for a full batch of 32 (NTSC hardware variant)
+;
+; ------------------------------------------------------------------------------
+;
+; SendNametableNow sends nametable entries in batches of 32, which costs 393
+; cycles. When there are fewer cycles than that left in the VBlank, the other
+; variants stop sending and waste the rest. That doesn't matter much in a 70-line
+; PAL VBlank, but in a 20-line NTSC VBlank it wastes around 10% of the time we
+; have, so this routine carries on in batches of eight entries instead.
+;
+; We jump here from snam6 with the same registers and variables as the main
+; loop in SendNametableNow, and we exit to snam8 when we have sent everything,
+; or to snam10 to save our progress when we run out of cycles.
+;
+; ******************************************************************************
+
+.SendNamesTail
+
+ SUBTRACT_CYCLES NAME8_CYCLES   ; Subtract the cost of a batch of eight entries
+                                ; from the cycle count
+
+ BMI ntal1              ; If the result is negative, jump to ntal1 to stop
+                        ; sending data in this VBlank
+
+ JSR SendBytes8         ; Send eight nametable entries to the PPU
+
+ BNE ntal2              ; If Y has wrapped round to zero, increment the high
+ INC dataForPPU+1       ; byte of dataForPPU(1 0) to point to the next page
+
+.ntal2
+
+ LDA nameTileCounter    ; Add 1 to nameTileCounter, as we just sent 1 * 8 = 8
+ CLC                    ; nametable entries (and nameTileCounter counts the tile
+ ADC #1                 ; number, divided by 8)
+ STA nameTileCounter
+
+ CMP lastToSend         ; If nameTileCounter >= lastToSend then we have reached
+ BCS ntal3              ; the last tile, so jump to ntal3 to finish up
+
+ AND #3                 ; If nameTileCounter is not a multiple of 4, then we are
+ BNE SendNamesTail      ; part-way through a row, so loop back to send the next
+                        ; batch of eight
+
+ JMP NamesRowCheck      ; Otherwise we have just finished a row, so jump to
+                        ; NamesRowCheck to check whether the next row needs
+                        ; sending at all
+
+.ntal3
+
+ JMP snam8              ; We have reached the last tile, so jump to snam8 to
+                        ; save progress and move on to the other bitplane, as
+                        ; at the end of SendNametableNow
+
+.ntal1
+
+ ADD_CYCLES NAME8_CYCLES-30    ; Add back the cost of the batch we didn't send
+                                ; (less the cost of checking)
+
+ JMP snam10             ; Jump to snam10 to save progress for use in the next
+                        ; VBlank and return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: SendPattsTail
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Send patterns one at a time when there aren't enough cycles left
+;             for a full batch of two or three (NTSC hardware variant)
+;
+; ------------------------------------------------------------------------------
+;
+; SendPatternsToPPU sends patterns in batches of three (400 cycles) or two (266
+; cycles), and like SendNamesTail, this routine carries on one pattern at a time
+; when a full batch won't fit into the rest of the VBlank.
+;
+; We jump here from spat11 or spat25 with the same registers and variables as
+; the main loops in SendPatternsToPPU (in particular, PPU_ADDR and addr(1 0)
+; already point to the PPU address for pattern number X, and Y is the index
+; into the pattern buffer), and we exit to spat19 when we have sent everything,
+; or to spat30 to save our progress when we run out of cycles.
+;
+; ******************************************************************************
+
+.SendPattsTail
+
+ SUBTRACT_CYCLES PATT1_CYCLES   ; Subtract the cost of one pattern from the cycle
+                                ; count
+
+ BMI ptal1              ; If the result is negative, jump to ptal1 to stop
+                        ; sending data in this VBlank
+
+ JSR SendBytes8         ; Send the eight bytes of pattern data for this
+                        ; bitplane to the PPU
+
+ BNE ptal2              ; If Y has wrapped round to zero, increment the high
+ INC dataForPPU+1       ; byte of dataForPPU(1 0) to point to the next page
+
+.ptal2
+
+ LDA addr               ; Set addr(1 0) = addr(1 0) + 16, so it points to the
+ CLC                    ; same bitplane in the next pattern in the PPU (as each
+ ADC #16                ; pattern takes up 16 bytes, eight for each bitplane)
+ STA addr
+ LDA addr+1
+ ADC #0
+ STA addr+1
+
+ STA PPU_ADDR           ; Set PPU_ADDR = addr(1 0)
+ LDA addr
+ STA PPU_ADDR
+
+ INX                    ; Increment the pattern number in X
+
+ CPX lastToSend         ; If X < lastToSend, loop back to send the next pattern
+ BCC SendPattsTail
+
+ JMP spat19             ; Otherwise we have sent the last pattern, so jump to
+                        ; spat19 to save progress and move on to sending the
+                        ; nametable entries
+
+.ptal1
+
+ ADD_CYCLES PATT1_CYCLES-40    ; Add back the cost of the pattern we didn't
+                                ; send (less the cost of checking)
+
+ JMP spat30             ; Jump to spat30 to save progress for use in the next
+                        ; VBlank and return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: BurnFineNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Burn the cycles that the burn loop in ClearBuffers overshot by
+;             (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; The burn loop at the end of ClearBuffers uses up the remaining cycle count in
+; steps of 32 cycles, so when it finishes, the count is between -32 and -1, and
+; the screen gets re-enabled up to 31 cycles early. That's fine in a 70-line PAL
+; VBlank, but in NTSC we want to re-enable the screen at a more consistent point,
+; so here we burn the remaining 0 to 31 cycles in steps of about five.
+;
+; ******************************************************************************
+
+.BurnFineNTSC
+
+ LDA cycleCount         ; Set A = cycleCount + 32, which is the number of cycles
+ AND #%00011111         ; (0 to 31) that the last step of the burn loop
+                        ; overshot by (the count is between -32 and -1, so its
+                        ; low byte is $E0 to $FF, and the bottom five bits give
+                        ; us the same result as adding 32)
+
+ LSR A                  ; Set X = A / 4
+ LSR A
+ TAX
+
+ BEQ bfin2              ; If X = 0, jump to bfin2 to return
+
+.bfin1
+
+ DEX                    ; Loop around X times, using five cycles each time
+ BNE bfin1
+
+.bfin2
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: NamesRowCheck
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Skip nametable rows in the space view that don't need sending to
+;             the PPU (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; In the space view, the NMI handler sends nametable rows 2 to 19 (576 bytes) to
+; the PPU for every frame, even though most of those rows are usually empty
+; apart from the box edges, and this takes up most of the time in the short NTSC
+; VBlank. So ScanRowsNTSC works out which rows actually need sending (those
+; that contain something now, or contained something in the frame that was last
+; sent to this bitplane, so we blank them out), and this routine skips the rest.
+;
+; We jump here from snam5 at the start of each batch of 32 nametable entries
+; (i.e. each tile row), with the same registers and variables as the main loop
+; in SendNametableNow, and we end up at snam7 to send the row, snam6 if there
+; isn't enough time to send a whole row, snam8 when we have reached the end, or
+; snam10 when we have run out of time.
+;
+; ******************************************************************************
+
+.NamesRowCheck
+
+ LDA nameTileCounter    ; If nameTileCounter is not a multiple of 4 then we are
+ AND #3                 ; part-way through a row (because SendNamesTail ran out
+ BEQ nrow9              ; of time in the last VBlank), so jump to SendNamesTail
+ JMP SendNamesTail      ; to send the rest of the row in batches of eight, as
+                        ; the batches of 32 in SendNametableNow must start at
+                        ; the start of a row (they only check for the end of a
+                        ; page of the buffer at the end of each batch)
+
+.nrow9
+
+ LDA bitplaneFlags,X    ; If bit 2 of the bitplane flags is set then we are
+ AND #%00000100         ; sending the whole buffer (which happens when a new
+ BNE nrow5              ; view is set up), so jump to nrow5 to send this row
+
+ LDA nameTileCounter    ; Set A to the row mask byte that contains this row,
+ CMP #32                ; which is in rowSendLo for rows 0 to 7, rowSendMid for
+ BCC nrow1              ; rows 8 to 15 and rowSendHi for rows 16 to 23 (the row
+ CMP #64                ; number is nameTileCounter / 4)
+ BCC nrow2
+ LDA rowSendHi,X
+ JMP nrow3
+
+.nrow1
+
+ LDA rowSendLo,X
+ JMP nrow3
+
+.nrow2
+
+ LDA rowSendMid,X
+
+.nrow3
+
+ PHA                    ; Store the mask byte on the stack
+
+ LDA nameTileCounter    ; Set X to the row number within the mask byte, which
+ LSR A                  ; is (nameTileCounter / 4) mod 8
+ LSR A
+ AND #7
+ TAX
+
+ PLA                    ; Extract the bit for this row from the mask byte
+ AND rowBits,X
+
+ PHP                    ; Restore the bitplane number into X, preserving the
+ LDX nmiBitplane        ; flags from the AND
+ PLP
+
+ BNE nrow6              ; If the bit is set, this row needs sending, so jump to
+                        ; nrow6 to send it
+
+                        ; Otherwise this row doesn't need sending, so we skip it
+
+ SUBTRACT_CYCLES ROW_SKIP_CYCLES    ; Subtract the cost of skipping a row from
+                                    ; the cycle count
+
+ BMI nrow7              ; If the result is negative, jump to nrow7 to stop
+                        ; sending data in this VBlank
+
+ TYA                    ; Move Y and dataForPPU(1 0) on by 32 bytes to point to
+ CLC                    ; the start of the next row in the buffer
+ ADC #32
+ TAY
+ BCC nrow4
+ INC dataForPPU+1
+
+.nrow4
+
+ LDA dataForPPU+1       ; Set PPU_ADDR to the matching address in the PPU, so
+ CLC                    ; the next row we send goes to the right place (the PPU
+ ADC ppuToBuffNameHi,X  ; address is the buffer address plus ppuToBuffNameHi)
+ STA PPU_ADDR
+ STY PPU_ADDR
+
+ LDA nameTileCounter    ; Add 4 to nameTileCounter, as we just skipped 32
+ CLC                    ; nametable entries
+ ADC #4
+ STA nameTileCounter
+
+ CMP lastToSend         ; If nameTileCounter < lastToSend, loop back to check
+ BCC NamesRowCheck      ; the next row
+
+ JMP snam8              ; Otherwise we have reached the last tile, so jump to
+                        ; snam8 to save progress and move on to the other
+                        ; bitplane
+
+.nrow5
+
+ LDA #$FF               ; We are sending the whole buffer for this bitplane, so
+ STA rowPrevLo,X        ; we no longer know which rows are empty in the PPU, so
+ STA rowPrevMid,X       ; set all the bits in the previous row mask so all rows
+ STA rowPrevHi,X        ; get sent next time
+
+ SUBTRACT_CYCLES 393+ROW_FULL_CYCLES    ; Subtract the cost of sending a row and
+                                        ; the (shorter) checks for a full send
+
+ BPL nrow8              ; If the result is positive, jump to nrow8 to send the
+                        ; row
+
+ JMP snam6              ; Otherwise jump to snam6 to send what we can of this
+                        ; row in batches of eight
+
+.nrow6
+
+ SUBTRACT_CYCLES 393+ROW_CHECK_CYCLES   ; Subtract the cost of sending a row and
+                                        ; checking it from the cycle count
+
+ BPL nrow8              ; If the result is positive, jump to nrow8 to send the
+                        ; row
+
+ JMP snam6              ; Otherwise jump to snam6 to send what we can of this
+                        ; row in batches of eight
+
+.nrow8
+
+ JMP snam7              ; Jump to snam7 to send this row of 32 entries
+
+.nrow7
+
+ ADD_CYCLES ROW_SKIP_CYCLES-ROW_FAIL_CYCLES ; Add back the cost of the skip that
+                                            ; we didn't do, less the cost of the
+                                            ; checks we did do
+
+ JMP snam10             ; Jump to snam10 to save progress for use in the next
+                        ; VBlank and return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: rowBits
+;       Type: Variable
+;   Category: PPU
+;    Summary: Bit values for extracting a row from a row mask (NTSC hardware
+;             variant only)
+;
+; ******************************************************************************
+
+.rowBits
+
+ EQUB %00000001, %00000010, %00000100, %00001000
+ EQUB %00010000, %00100000, %01000000, %10000000
+
+; ******************************************************************************
+;
+;       Name: ClearSmallNTSC
+;       Type: Subroutine
+;   Category: Utility routines
+;    Summary: Zero a block of fewer than 256 bytes (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; In the other variants, ClearMemory zeroes blocks of fewer than 256 bytes by
+; jumping into the middle of the unrolled FillMemory routine, at an address that
+; it calculates from the block size. FillMemory is a loop in this variant, so the
+; JMP (clearBlockSize) at cmem11 jumps here instead, and we zero the block with
+; a loop, charging the extra time to the cycle count so the NMI timings are
+; still correct.
+;
+; We are called via JSR cmem11 from ClearMemory, which pushes the size of the
+; block onto the stack first, so the stack contains the return address and then
+; the block size.
+;
+; Arguments:
+;
+;   A                   0
+;
+;   Y                   0
+;
+;   clearAddress(1 0)   The address of the block to zero
+;
+; Returns:
+;
+;   X                   X is preserved
+;
+; ******************************************************************************
+
+.ClearSmallNTSC
+
+ TXA                    ; Store X on the stack so we can preserve it
+ PHA
+
+ TSX                    ; Fetch the block size from the stack, which is below
+ LDA $0104,X            ; X and the return address
+
+ PHA                    ; Store the block size on the stack
+
+ LSR A                  ; Set A = size / 8, the number of batches of eight
+ LSR A
+ LSR A
+
+ PHA                    ; Store the number of batches on the stack
+
+ ASL A                  ; Set A = batches * 4 + batches + 40, which is the
+ ASL A                  ; number of cycles this routine takes over and above
+ TSX                    ; the 8 cycles per byte that ClearMemory has already
+ CLC                    ; charged (5 cycles per batch for the loop, and around
+ ADC $0101,X            ; 40 cycles of setting up)
+ ADC #40
+
+ EOR #$FF               ; Subtract A from cycleCount(1 0)
+ SEC
+ ADC cycleCount
+ STA cycleCount
+ BCS clrs1
+ DEC cycleCount+1
+
+.clrs1
+
+ PLA                    ; Set X to the number of batches of eight
+ TAX
+
+ LDA #0                 ; We are zeroing memory, so set A = 0
+
+ CPX #0                 ; If there are no batches of eight, jump to clrs3
+ BEQ clrs3
+
+.clrs2
+
+ FILL_MEMORY 8          ; Zero eight bytes at clearAddress(1 0) + Y
+
+ DEX                    ; Loop back until we have done all the batches
+ BNE clrs2
+
+.clrs3
+
+ PLA                    ; Set X to the number of bytes left over (the block
+ AND #7                 ; size mod 8), and if there are none, jump to clrs5
+ TAX
+ BEQ clrs5
+
+ LDA #0                 ; Zero the remaining bytes one at a time
+
+.clrs4
+
+ STA (clearAddress),Y
+ INY
+ DEX
+ BNE clrs4
+
+.clrs5
+
+ PLA                    ; Restore X from the stack
+ TAX
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: DrawEdgesScan_b3
+;       Type: Subroutine
+;   Category: Drawing the screen
+;    Summary: Call the DrawEdgesScanNTSC routine in ROM bank 3 (NTSC hardware
+;             variant only)
+;
+; ******************************************************************************
+
+.DrawEdgesScan_b3
+
+ LDA currentBank        ; If ROM bank 3 is already paged into memory, jump to
+ CMP #3                 ; desc1
+ BEQ desc1
+
+ PHA                    ; Otherwise store the current bank number on the stack
+
+ LDA #3                 ; Page ROM bank 3 into memory at $8000
+ JSR SetBank
+
+ JSR DrawEdgesScanNTSC  ; Call DrawEdgesScanNTSC, now that it is paged into
+                        ; memory
+
+ JMP ResetBank          ; Fetch the previous ROM bank number from the stack and
+                        ; page that bank back into memory at $8000, returning
+                        ; from the subroutine using a tail call
+
+.desc1
+
+ JMP DrawEdgesScanNTSC  ; Call DrawEdgesScanNTSC, which is already paged into
+                        ; memory, returning from the subroutine using a tail
+                        ; call
+
+ IF P% < FillMemory + 672         ; Pad with unused bytes so this block is the
+  FOR I%, P%, FillMemory + 671    ; same size as the original (672 bytes),
+   EQUB $FF                       ; checking first as FOR loops always run at
+  NEXT                            ; least once
+ ENDIF
+
+ ASSERT P% = FillMemory + 672
+
+ELSE
+
  FILL_MEMORY 224        ; Fill 224 bytes at clearAddress(1 0) + Y with A
+
+ENDIF
 
                         ; Falling through into FillMemory32Bytes to fill another
                         ; 32 bytes, bringing the total to 256
@@ -5103,7 +5971,16 @@ ENDIF
                         ; First we consider whether we can clear a block of 256
                         ; bytes
 
+IF _NTSC_HW
+
+ SUBTRACT_CYCLES 2152   ; FillMemory is a loop in the NTSC hardware variant,
+                        ; so it takes 47 cycles longer
+
+ELSE
+
  SUBTRACT_CYCLES 2105   ; Subtract 2105 from the cycle count
+
+ENDIF
 
  BMI cmem1              ; If the result is negative, jump to cmem1 to consider
                         ; clearing a 32-byte block in this VBlank, as we don't
@@ -5115,7 +5992,15 @@ ENDIF
 
 .cmem1
 
+IF _NTSC_HW
+
+ ADD_CYCLES 2106        ; Add 2106 to the cycle count (see above)
+
+ELSE
+
  ADD_CYCLES 2059        ; Add 2059 to the cycle count
+
+ENDIF
 
  JMP cmem3              ; Jump to cmem3 to consider clearing the block with
                         ; fewer than 256 bytes
@@ -5377,10 +6262,19 @@ ENDIF
 
 .cmem11
 
+IF _NTSC_HW
+
+ JMP ClearSmallNTSC     ; FillMemory is a loop in the NTSC hardware variant, so
+                        ; jump to ClearSmallNTSC to zero the block instead
+
+ELSE
+
  JMP (clearBlockSize)   ; We set up clearBlockSize(1 0) to point to the entry
                         ; point in FillMemory that will fill the correct number
                         ; of bytes with zero, so this clears our memory block
                         ; and returns to the PLA above using a tail call
+
+ENDIF
 
 .cmem12
 
@@ -5803,7 +6697,17 @@ ENDIF
 
  JSR WaitForVBlank      ; Wait for the next VBlank to pass
 
+IF _NTSC_HW
+
+ JSR MakeSoundsNTSC     ; Call the MakeSounds routine to make the current sounds
+                        ; (via MakeSoundsNTSC, which skips one call in six so
+                        ; the music plays at the same speed as on PAL)
+
+ELSE
+
  JSR MakeSounds_b6      ; Call the MakeSounds routine to make the current sounds
+
+ENDIF
                         ; (music and sound effects)
 
  PLA                    ; Restore X from the stack so it is preserved
@@ -5928,9 +6832,18 @@ ENDIF
  PHA                    ; Store A on the stack, so we can retrieve them below
                         ; when setting the new drawing bitplane flags
 
+IF _NTSC_HW
+
+ JSR DrawEdgesScan_b3   ; Draw the box edges and work out which nametable rows
+                        ; need sending to the PPU (NTSC hardware variant)
+
+ELSE
+
  JSR DrawBoxEdges       ; Draw the left and right edges of the box along the
                         ; sides of the screen, drawing into the nametable buffer
                         ; for the drawing bitplane
+
+ENDIF
 
  LDX drawingBitplane    ; Set X to the drawing bitplane
 
@@ -19847,7 +20760,99 @@ ENDIF
  JMP SetBank0           ; Page ROM bank 0 into memory at $8000, returning from
                         ; the subroutine using a tail call
 
-IF _NTSC
+IF _NTSC_HW
+
+; ******************************************************************************
+;
+;       Name: SendBarNamesNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Send the nametable entries for the icon bar to the PPU, in a way
+;             that fits into the shorter VBlank on a real NTSC console
+;
+; ------------------------------------------------------------------------------
+;
+; This routine and SendBarPattsNTSC live in the space taken by unused bytes in
+; the other variants, so the rest of the bank stays at the same addresses.
+;
+; In the other variants, SendBarNamesToPPU sends the icon bar nametable entries
+; and then has to send the first batch of icon bar patterns in the same VBlank,
+; as barPatternCounter = 0 means both "send the nametable entries" and "send
+; pattern batch 0". That takes more cycles than a whole NTSC VBlank, so on a
+; real NTSC console the pattern batch never fits, the counter stays at 0, the
+; nametable entries get sent again in every VBlank, and the game hangs while
+; waiting for barPatternCounter to reach 128.
+;
+; So in this variant, if the nametable entries get sent but there aren't enough
+; cycles left for the first pattern batch, we set barPatternCounter to 2, which
+; tells SendBarPattsNTSC to start the patterns from batch 0 in the next VBlank.
+; The real counter is always a multiple of 4, so 2 can't clash with it, and the
+; main game code only ever sets barPatternCounter to 0 or checks bit 7, so if
+; the game asks for a new icon bar in the meantime, the 2 is overwritten with 0
+; and the nametable entries are sent again, as they should be.
+;
+; ******************************************************************************
+
+.SendBarNamesNTSC
+
+ JSR SendBarNamesToPPU  ; Send the nametable entries for the icon bar to the
+                        ; PPU, along with as many pattern batches as fit into
+                        ; the remaining cycles (if any)
+
+ LDA barPatternCounter  ; If barPatternCounter is non-zero then either the
+ BNE bnam1              ; patterns were skipped (so it is now 128) or at least
+                        ; one pattern batch was sent, so jump to bnam1 to return
+                        ; from the subroutine
+
+ LDA #2                 ; Otherwise the nametable entries were sent but none of
+ STA barPatternCounter  ; the patterns, so set barPatternCounter to 2 so that
+                        ; SendBarPattsNTSC starts the patterns in the next NMI
+
+.bnam1
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: SendBarPattsNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Send pattern data for the icon bar to the PPU, starting from batch
+;             0 if SendBarNamesNTSC has just sent the nametable entries
+;
+; ------------------------------------------------------------------------------
+;
+; See SendBarNamesNTSC for details.
+;
+; ******************************************************************************
+
+.SendBarPattsNTSC
+
+ LDA barPatternCounter  ; If barPatternCounter is not 2, jump to SendBarPattsToPPU
+ CMP #2                 ; with A set to barPatternCounter to send the next
+ BNE bpat1              ; pattern batch, as normal
+
+ LDA cycleCount+1       ; If cycleCount(1 0) < 1536 then there aren't enough
+ CMP #6                 ; cycles left to send pattern batch 0 (which needs
+ BCC bnam1              ; 1297), so return from the subroutine (as bnam1
+                        ; contains an RTS) and try again in the next NMI
+
+ LDA #0                 ; Set barPatternCounter = 0 and A = 0 to send pattern
+ STA barPatternCounter  ; batch 0, now that the nametable entries have been
+                        ; sent
+
+.bpat1
+
+ JMP SendBarPattsToPPU  ; Jump to SendBarPattsToPPU to send the pattern data,
+                        ; returning from the subroutine using a tail call
+
+ FOR I%, P%, SendBarNamesNTSC + 52  ; Pad with unused bytes so this block is
+  EQUB $FF                          ; the same size as in the NTSC variant
+ NEXT                               ; (53 bytes)
+
+ ASSERT P% = SendBarNamesNTSC + 53
+
+ELIF _NTSC
 
  EQUB $F5, $F5, $F5     ; These bytes appear to be unused
  EQUB $F5, $F6, $F6
@@ -20043,7 +21048,67 @@ ENDIF
  EQUB $36, $00, $7F, $63, $63, $63, $7F, $00
  EQUB $36, $00, $63, $63, $63, $63, $7F, $00
 
-IF _NTSC
+IF _NTSC_HW
+
+; ******************************************************************************
+;
+;       Name: SetScrollNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Set the scroll position for a real NTSC console, so the screen
+;             can be re-enabled on scanline 7 without moving the picture
+;
+; ------------------------------------------------------------------------------
+;
+; This routine lives in the space taken by unused bytes in the other variants,
+; so the rest of the bank stays at the same addresses (see SetPPURegisters).
+;
+; On a real NTSC console the NMI handler re-enables the screen on scanline 7
+; (see NMI_CYCLES_NTSC_HW), after the pre-render line has gone by with
+; rendering disabled. This means the PPU never reloads the vertical part of its
+; address from the scroll registers, so we load the full PPU address register v
+; directly, using the standard $2006/$2005/$2005/$2006 sequence.
+;
+; Rendering restarts with fine y-scroll 6 in tile row 0, and when the PPU then
+; increments the fine y-scroll at dot 256 of line 7, line 8 shows pixel row 7.
+; So nametable row r appears on scanline r + 1, just as in the NTSC layout that
+; the YPAL = 0 coordinates were designed for.
+;
+; ******************************************************************************
+
+.SetScrollNTSC
+
+ LDA #$20               ; Set A to the high byte of the visible nametable, as
+ LDX hiddenBitplane     ; in SetPPURegisters ($20 when hiddenBitplane = 1, $24
+ BNE sscr1              ; when it is 0)
+ LDA #$24
+
+.sscr1
+
+ STA PPU_ADDR           ; First write: set the nametable bits in the PPU's
+                        ; temporary address register t
+
+ LDA #6                 ; Second write: set the vertical scroll to 6 (i.e. fine
+ STA PPU_SCROLL         ; y-scroll 6 in tile row 0)
+
+ LDA #8                 ; First write: set the horizontal scroll to 8, so the
+ STA PPU_SCROLL         ; leftmost tile on each row is scrolled around to the
+                        ; right side, as in the other variants
+
+ LDA #%00000001         ; Second write: set the low byte of t to coarse x = 1
+ STA PPU_ADDR           ; and coarse y = 0, which also copies t into v, so the
+                        ; whole scroll position takes effect as soon as the
+                        ; screen is re-enabled
+
+ RTS                    ; Return from the subroutine
+
+ FOR I%, P%, SetScrollNTSC + 33  ; Pad with unused bytes so this block is the
+  EQUB $FF                       ; same size as in the NTSC variant (34 bytes)
+ NEXT
+
+ ASSERT P% = SetScrollNTSC + 34
+
+ELIF _NTSC
 
  EQUB $00, $8D, $06     ; These bytes appear to be unused
  EQUB $20, $A9, $4C

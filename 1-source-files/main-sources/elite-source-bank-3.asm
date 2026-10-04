@@ -1891,6 +1891,14 @@ ENDIF
 
 .SendViewToPPU
 
+IF _NTSC_HW
+
+ JSR InvalidateRowMasks ; We are about to write the nametables directly, so
+                        ; make sure every row gets sent again in the space view
+                        ; (NTSC hardware variant only)
+
+ENDIF
+
  JSR WaitForNMI         ; Wait until the next NMI interrupt has passed (i.e. the
                         ; next VBlank)
 
@@ -2852,6 +2860,14 @@ ENDIF
 ; ******************************************************************************
 
 .ResetScreen
+
+IF _NTSC_HW
+
+ JSR InvalidateRowMasks ; We are about to write the nametables directly, so
+                        ; make sure every row gets sent again in the space view
+                        ; (NTSC hardware variant only)
+
+ENDIF
 
  JSR WaitFor3xVBlank    ; Wait for three VBlanks to pass
 
@@ -7752,6 +7768,188 @@ ENDIF
 ;  Deep dive: Splitting NES Elite across multiple ROM banks
 ;
 ; ******************************************************************************
+
+IF _NTSC_HW
+
+; ******************************************************************************
+;
+;       Name: DrawEdgesScanNTSC
+;       Type: Subroutine
+;   Category: Drawing the screen
+;    Summary: Draw the box edges and work out which nametable rows need sending
+;             to the PPU for the drawing bitplane (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; This is called from SetDrawPlaneFlags in place of DrawBoxEdges, just before
+; the drawing bitplane is handed over to the NMI handler to be sent to the PPU.
+;
+; In the space view, it scans tile rows 0 to 19 of the drawing bitplane's
+; nametable buffer, and sets the bit for each row that contains anything other
+; than the box edges (i.e. a non-zero entry in columns 2 to 31). The rows to
+; send are then the rows that contain something in this frame, plus the rows
+; that contained something in the frame we last sent to this bitplane (so those
+; get blanked out in the PPU). See NamesRowCheck for the NMI side of this.
+;
+; In other views, it sets all the bits, so every row gets sent as normal.
+;
+; ******************************************************************************
+
+.DrawEdgesScanNTSC
+
+ JSR DrawBoxEdges       ; Draw the box edges (this also sets X to the drawing
+                        ; bitplane)
+
+ TYA                    ; Store Y on the stack so we can preserve it
+ PHA
+
+ LDA QQ11               ; If this is the space view, jump to srow2 to scan the
+ BEQ srow2              ; nametable buffer
+
+ LDA #$FF               ; This is not the space view, so set all the bits in the
+ STA rowSendLo,X        ; masks for this bitplane, so every row gets sent, both
+ STA rowSendMid,X       ; now and in the next frame
+ STA rowSendHi,X
+ STA rowPrevLo,X
+ STA rowPrevMid,X
+ STA rowPrevHi,X
+
+.srow1
+
+ PLA                    ; Restore Y from the stack
+ TAY
+
+ RTS                    ; Return from the subroutine
+
+.srow2
+
+ LDA SC                 ; Store SC(1 0) on the stack so we can use it as a
+ PHA                    ; pointer to each row in the buffer
+ LDA SC+1
+ PHA
+
+ LDA #0                 ; Set SC(1 0) to the start of the nametable buffer for
+ STA SC                 ; the drawing bitplane, and zero the mask we are going
+ STA rowScan            ; to build in rowScan(2 1 0)
+ STA rowScan+1
+ STA rowScan+2
+ LDA nameBufferHiAddr,X
+ STA SC+1
+
+ LDA #24                ; We build the mask for 24 rows, by shifting a bit for
+ STA rowScanCount       ; each row into the top of the mask and shifting the
+                        ; mask right, so after 24 rows, row 0 ends up in bit 0
+
+.srow3
+
+ SETUP_PPU_FOR_ICON_BAR ; If the PPU has started drawing the icon bar, configure
+                        ; the PPU to use nametable 0 and pattern table 0 (we do
+                        ; this for every row, as this routine runs for long
+                        ; enough that it would otherwise switch the PPU too late
+                        ; and corrupt the top of the dashboard)
+
+ LDA rowScanCount       ; Rows 20 to 23 are never sent (they are below the
+ CMP #5                 ; space view), so if we are on one of those rows, jump
+ BCC srow4              ; to srow4 with the C flag clear to mark it as empty
+
+ LDY #2                 ; OR together the entries in columns 2 to 31 of this
+ LDA #0                 ; row, so A is non-zero if the row contains anything
+                        ; other than the box edges (which are in columns 0 and
+ FOR I%, 2, 31          ; 1)
+  ORA (SC),Y
+  INY
+ NEXT
+
+ CMP #1                 ; Set the C flag if A is non-zero (i.e. the row is not
+                        ; empty), or clear it if it is empty
+
+.srow4
+
+ ROR rowScan+2          ; Shift the C flag into the top of the mask and shift
+ ROR rowScan+1          ; the whole mask right by one place
+ ROR rowScan
+
+ LDA SC                 ; Move SC(1 0) on to the next row
+ CLC
+ ADC #32
+ STA SC
+ BCC srow5
+ INC SC+1
+
+.srow5
+
+ DEC rowScanCount       ; Loop back until we have done all 24 rows
+ BEQ srow6
+ JMP srow3
+
+.srow6
+
+ LDA rowScan            ; Set the rows to send to the rows that contain
+ ORA rowPrevLo,X        ; something now, plus the rows that contained something
+ STA rowSendLo,X        ; last time, and then store the rows that contain
+ LDA rowScan            ; something now for next time
+ STA rowPrevLo,X
+
+ LDA rowScan+1          ; Do the same for rows 8 to 15
+ ORA rowPrevMid,X
+ STA rowSendMid,X
+ LDA rowScan+1
+ STA rowPrevMid,X
+
+ LDA rowScan+2          ; And rows 16 to 23
+ ORA rowPrevHi,X
+ STA rowSendHi,X
+ LDA rowScan+2
+ STA rowPrevHi,X
+
+ PLA                    ; Restore SC(1 0) from the stack
+ STA SC+1
+ PLA
+ STA SC
+
+ JMP srow1              ; Jump to srow1 to restore Y and return
+
+; ******************************************************************************
+;
+;       Name: InvalidateRowMasks
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Set all the row masks, so every nametable row gets sent to the
+;             PPU in both bitplanes (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; This is called when nametables are written to the PPU directly, so we no
+; longer know which rows are empty in the PPU.
+;
+; Returns:
+;
+;   X                   X is preserved
+;
+;   Y                   Y is preserved
+;
+; ******************************************************************************
+
+.InvalidateRowMasks
+
+ TXA                    ; Store X on the stack so we can preserve it
+ PHA
+
+ LDA #$FF               ; Set all 12 bytes of row masks to $FF
+ LDX #11
+
+.inva1
+
+ STA rowSendLo,X
+ DEX
+ BPL inva1
+
+ PLA                    ; Restore X from the stack
+ TAX
+
+ RTS                    ; Return from the subroutine
+
+ENDIF
 
  FOR I%, P%, $BFF9
 

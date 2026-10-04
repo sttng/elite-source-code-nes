@@ -31,8 +31,13 @@
 
  INCLUDE "1-source-files/main-sources/elite-build-options.asm"
 
- _NTSC = (_VARIANT = 1)
+ _NTSC = (_VARIANT = 1) OR (_VARIANT = 3)
  _PAL  = (_VARIANT = 2)
+
+ _NTSC_HW = (_VARIANT = 3)   ; Variant 3 is the NTSC variant with its NMI timings
+                            ; reworked to run on a real NTSC console, rather
+                            ; than an emulator (so _NTSC is also TRUE for this
+                            ; variant, and _NTSC_HW flags the differences)
 
 ; ******************************************************************************
 ;

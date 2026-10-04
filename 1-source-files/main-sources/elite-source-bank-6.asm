@@ -2989,6 +2989,99 @@ ENDIF
 
 .noteFrequency
 
+IF _NTSC_HW
+
+                        ; In the NTSC hardware variant, the period values are
+                        ; scaled by the ratio of the NTSC and PAL CPU clocks
+                        ; (1.789773 MHz / 1.662607 MHz = 1.0765), so the music
+                        ; plays at the same pitch as the PAL release (otherwise
+                        ; it would be around 1.3 semitones sharp)
+
+
+ EQUW $0357             ; The frequency for C# in octave 2
+ EQUW $0325             ; The frequency for D  in octave 2
+ EQUW $02F8             ; The frequency for D# in octave 2
+ EQUW $02CD             ; The frequency for E  in octave 2
+ EQUW $02A5             ; The frequency for F  in octave 2
+ EQUW $0280             ; The frequency for F# in octave 2
+ EQUW $025B             ; The frequency for G  in octave 2
+ EQUW $023A             ; The frequency for G# in octave 2
+
+ EQUW $0433             ; The frequency for C  in octave 1
+ EQUW $03F7             ; The frequency for B  in octave 1
+ EQUW $03BE             ; The frequency for A# in octave 1
+ EQUW $0388             ; The frequency for A  in octave 1
+ EQUW $0357             ; The frequency for C# in octave 2
+ EQUW $0325             ; The frequency for D  in octave 2
+ EQUW $02F8             ; The frequency for D# in octave 2
+ EQUW $02CD             ; The frequency for E  in octave 2
+ EQUW $02A5             ; The frequency for F  in octave 2
+ EQUW $0280             ; The frequency for F# in octave 2
+ EQUW $025B             ; The frequency for G  in octave 2
+ EQUW $023A             ; The frequency for G# in octave 2
+ EQUW $0219             ; The frequency for A  in octave 2
+ EQUW $01FB             ; The frequency for A# in octave 2
+ EQUW $01DF             ; The frequency for B  in octave 2
+ EQUW $01C4             ; The frequency for C  in octave 3
+ EQUW $01AB             ; The frequency for C# in octave 3
+ EQUW $0193             ; The frequency for D  in octave 3
+ EQUW $017C             ; The frequency for D# in octave 3
+ EQUW $0167             ; The frequency for E  in octave 3
+ EQUW $0153             ; The frequency for F  in octave 3
+ EQUW $0140             ; The frequency for F# in octave 3
+ EQUW $012D             ; The frequency for G  in octave 3
+ EQUW $011C             ; The frequency for G# in octave 3
+ EQUW $010C             ; The frequency for A  in octave 3
+ EQUW $00FD             ; The frequency for A# in octave 3
+ EQUW $00EF             ; The frequency for B  in octave 3
+ EQUW $00E1             ; The frequency for C  in octave 4
+ EQUW $00D4             ; The frequency for C# in octave 4
+ EQUW $00C9             ; The frequency for D  in octave 4
+ EQUW $00BE             ; The frequency for D# in octave 4
+ EQUW $00B3             ; The frequency for E  in octave 4
+ EQUW $00A9             ; The frequency for F  in octave 4
+ EQUW $009F             ; The frequency for F# in octave 4
+ EQUW $0096             ; The frequency for G  in octave 4
+ EQUW $008E             ; The frequency for G# in octave 4
+ EQUW $0086             ; The frequency for A  in octave 4
+ EQUW $007E             ; The frequency for A# in octave 4
+ EQUW $0078             ; The frequency for B  in octave 4
+ EQUW $0070             ; The frequency for C  in octave 5
+ EQUW $006A             ; The frequency for C# in octave 5
+ EQUW $0064             ; The frequency for D  in octave 5
+ EQUW $005E             ; The frequency for D# in octave 5
+ EQUW $0058             ; The frequency for E  in octave 5
+ EQUW $0054             ; The frequency for F  in octave 5
+ EQUW $004F             ; The frequency for F# in octave 5
+ EQUW $004A             ; The frequency for G  in octave 5
+ EQUW $0046             ; The frequency for G# in octave 5
+ EQUW $0043             ; The frequency for A  in octave 5
+ EQUW $003F             ; The frequency for A# in octave 5
+ EQUW $003B             ; The frequency for B  in octave 5
+ EQUW $0038             ; The frequency for C  in octave 6
+ EQUW $0035             ; The frequency for C# in octave 6
+ EQUW $0032             ; The frequency for D  in octave 6
+ EQUW $002E             ; The frequency for D# in octave 6
+ EQUW $002C             ; The frequency for E  in octave 6
+ EQUW $0029             ; The frequency for F  in octave 6
+ EQUW $0027             ; The frequency for F# in octave 6
+ EQUW $0025             ; The frequency for G  in octave 6
+ EQUW $0023             ; The frequency for G# in octave 6
+ EQUW $0020             ; The frequency for A  in octave 6
+ EQUW $001E             ; The frequency for A# in octave 6
+ EQUW $001D             ; The frequency for B  in octave 6
+ EQUW $001B             ; The frequency for C  in octave 7
+ EQUW $001A             ; The frequency for C# in octave 7
+ EQUW $0018             ; The frequency for D  in octave 7
+ EQUW $0017             ; The frequency for D# in octave 7
+ EQUW $0016             ; The frequency for E  in octave 7
+ EQUW $0015             ; The frequency for F  in octave 7
+ EQUW $0013             ; The frequency for F# in octave 7
+ EQUW $0012             ; The frequency for G  in octave 7
+
+ELSE
+
+
  EQUW $031A             ; The frequency for C# in octave 2
  EQUW $02EC             ; The frequency for D  in octave 2
  EQUW $02C2             ; The frequency for D# in octave 2
@@ -3069,6 +3162,8 @@ ENDIF
  EQUW $0013             ; The frequency for F  in octave 7
  EQUW $0012             ; The frequency for F# in octave 7
  EQUW $0011             ; The frequency for G  in octave 7
+
+ENDIF
 
 ; ******************************************************************************
 ;

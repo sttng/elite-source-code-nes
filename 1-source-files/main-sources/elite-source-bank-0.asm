@@ -7134,9 +7134,19 @@ ENDIF
  LDY #10                ; the middle of the screen and leave it there for 10
  JSR PrintMessage       ; ticks of the DLY counter
 
+IF _NTSC_HW
+
+ LDA #30                ; Set nmiTimer = 30 to add half a second on top of the
+ STA nmiTimer           ; penalty below (as 30 frames is half a second on NTSC
+                        ; systems)
+
+ELSE
+
  LDA #25                ; Set nmiTimer = 25 to add half a second on top of the
  STA nmiTimer           ; penalty below (as 25 frames is half a second in PAL
                         ; systems)
+
+ENDIF
 
  LDA nmiTimerLo         ; Add 60 to nmiTimer(Hi Lo) so the time recorded to
  CLC                    ; complete the combat demo is 60 seconds longer than it
@@ -8446,10 +8456,20 @@ ENDIF
  LDA #11                ; Run 11 iterations of the main flight loop so all three
  JSR RunDemoFlightLoop  ; ships pull away from the centre of the screen
 
+IF _NTSC_HW
+
+ LDA #60                ; Set the NMI timer so it starts counting down from 60,
+ STA nmiTimer           ; so the nmiTimer(Hi Lo) will tick up to one second
+                        ; after 60 VBlanks (which is one second on NTSC)
+
+ELSE
+
  LDA #50                ; Set the NMI timer so it starts counting down from 50,
  STA nmiTimer           ; so the nmiTimer(Hi Lo) will tick up to one second
                         ; after 50 VBlanks (which is one second on PAL systems
                         ; or 0.83 seconds on NTSC)
+
+ENDIF
 
  LDA #0                 ; Set the NMI timer in nmiTimer(Hi Lo) to zero so we can
  STA nmiTimerLo         ; use it to count how long the combat demo runs for

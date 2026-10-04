@@ -26,8 +26,13 @@
 
  INCLUDE "1-source-files/main-sources/elite-build-options.asm"
 
- _NTSC = (_VARIANT = 1)
+ _NTSC = (_VARIANT = 1) OR (_VARIANT = 3)
  _PAL  = (_VARIANT = 2)
+
+ _NTSC_HW = (_VARIANT = 3)   ; Variant 3 is the NTSC variant with its NMI timings
+                            ; reworked to run on a real NTSC console, rather
+                            ; than an emulator (so _NTSC is also TRUE for this
+                            ; variant, and _NTSC_HW flags the differences)
 
 ; ******************************************************************************
 ;
@@ -150,6 +155,63 @@
  YPAL = 6 AND _PAL      ; A margin of 6 pixels that is applied to a number of
                         ; y-coordinates for the PAL version only (as the PAL
                         ; version has a taller screen than NTSC)
+
+ NMI_CYCLES_NTSC_HW = 2177  ; The cycle budget for each NMI in the NTSC hardware
+                            ; variant (_NTSC_HW)
+                            ;
+                            ; The NMI handler blanks the screen, sends data to
+                            ; the PPU until this budget runs out, and then
+                            ; re-enables the screen, so this value determines
+                            ; the exact point at which rendering restarts
+                            ;
+                            ; On a real NTSC console, VBlank ends at line 261,
+                            ; so like the PAL release, we keep rendering off
+                            ; into the top of the frame, and restart it at
+                            ; around dot 120 on scanline 7 (which is hidden in
+                            ; the overscan area of an NTSC TV)
+                            ;
+                            ; The SetPPURegisters routine presets the PPU's
+                            ; fine y-scroll so the picture still lands on the
+                            ; same scanlines as the NTSC layout (i.e. row r of
+                            ; the nametable appears on scanline r + 1, which is
+                            ; what the YPAL = 0 coordinates assume)
+                            ;
+                            ; If this value changes, the restart must stay
+                            ; well clear of dot 256 (the vertical increment)
+                            ; on scanline 7, or the picture will jump by a line
+
+ NAME8_CYCLES = 146         ; The cost in cycles of sending one batch of eight
+                            ; nametable entries in SendNamesTail (NTSC hardware
+                            ; variant only)
+
+ ROW_SKIP_CYCLES = 131      ; The cost in cycles of skipping a nametable row in
+                            ; NamesRowCheck (NTSC hardware variant only)
+
+ ROW_FAIL_CYCLES = 108      ; The cost in cycles of checking a row in
+                            ; NamesRowCheck when there aren't enough cycles left
+                            ; to skip it (NTSC hardware variant only)
+
+ ROW_FULL_CYCLES = 34       ; The cost in cycles of the checks in NamesRowCheck
+                            ; when we are sending the whole buffer (NTSC hardware
+                            ; variant only)
+
+ ROW_CHECK_CYCLES = 73      ; The cost in cycles of checking whether a row needs
+                            ; sending in NamesRowCheck, which we add to the cost
+                            ; of sending the row (NTSC hardware variant only)
+
+ PATT1_CYCLES = 160         ; The cost in cycles of sending one pattern in
+                            ; SendPattsTail (NTSC hardware variant only)
+
+ NAME_FLIP_NTSC_HW = 12     ; The NMI handler swaps the visible and hidden
+                            ; bitplanes once there are fewer than this many
+                            ; batches of eight nametable entries left to send
+                            ; for the hidden bitplane, on the basis that the
+                            ; rest can be sent in the same VBlank (each batch
+                            ; of 32 entries costs 393 cycles, so 12 batches
+                            ; of 8 entries is 1179 cycles)
+                            ;
+                            ; The other variants use 48, which only fits into
+                            ; the much longer PAL VBlank
 
 ; ******************************************************************************
 ;
@@ -5200,7 +5262,60 @@ ENDIF
  SKIP 8 * 73            ; The third part of each of the eight save slots, which
                         ; are split into three for checksum purposes
 
+IF _NTSC_HW
+
+                        ; The NTSC hardware variant uses some of these unused
+                        ; bytes to keep track of which nametable rows in the
+                        ; space view need sending to the PPU (see ScanRowsNTSC
+                        ; and NamesRowCheck)
+                        ;
+                        ; Each mask has one bit per tile row (bit 0 of the Lo
+                        ; byte is row 0, bit 7 of the Hi byte is row 23), and
+                        ; there is one mask per bitplane
+
+.rowSendLo
+
+ SKIP 2                 ; The rows to send for each bitplane in the NMI handler,
+                        ; rows 0 to 7
+
+.rowSendMid
+
+ SKIP 2                 ; Rows 8 to 15
+
+.rowSendHi
+
+ SKIP 2                 ; Rows 16 to 23
+
+.rowPrevLo
+
+ SKIP 2                 ; The rows that contained something other than the box
+                        ; edges in the frame we last sent to each bitplane, so
+                        ; we know which rows to send again to blank them out,
+                        ; rows 0 to 7
+
+.rowPrevMid
+
+ SKIP 2                 ; Rows 8 to 15
+
+.rowPrevHi
+
+ SKIP 2                 ; Rows 16 to 23
+
+.rowScan
+
+ SKIP 3                 ; Workspace for building a row mask in ScanRowsNTSC
+
+.rowScanCount
+
+ SKIP 1                 ; The row counter in ScanRowsNTSC
+
+ SKIP 24                ; These bytes appear to be unused
+
+ELSE
+
  SKIP 40                ; These bytes appear to be unused
+
+ENDIF
 
 ; ******************************************************************************
 ;
