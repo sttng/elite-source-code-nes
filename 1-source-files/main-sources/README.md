@@ -1,34 +1,14 @@
-# Annotated source code for the NES version of Elite
+# Source files for the NES version of Elite
 
-This folder contains the annotated source code for the NES version of Elite.
+This folder contains the source files for the NES version of Elite.
 
-* Main source files:
+* [main-sources](main-sources) contains the annotated source code
 
-  * [elite-source-bank-0.asm](elite-source-bank-0.asm) contains the source for ROM bank 0 (main game loop, main flight loop, core game code)
+* [images](images) contains images and associated binaries that have been extracted from the game binary by the [unpack-data.py](../2-build-files/unpack-data.py) and [combine-images.py](../2-build-files/combine-images.py) scripts
 
-  * [elite-source-bank-1.asm](elite-source-bank-1.asm) contains the source for ROM bank 1 (ship blueprints, drawing ships, planets, suns and stardust)
+* [original-sources](original-sources) contains the original source code from Ian Bell's personal website
 
-  * [elite-source-bank-2.asm](elite-source-bank-2.asm) contains the source for ROM bank 2 (game text in three languages, text routines)
-
-  * [elite-source-bank-3.asm](elite-source-bank-3.asm) contains the source for ROM bank 3 (icon bar images and routines, fonts, palettes, views, other images)
-
-  * [elite-source-bank-4.asm](elite-source-bank-4.asm) contains the source for ROM bank 4 (commander images and associated routines, other images)
-
-  * [elite-source-bank-5.asm](elite-source-bank-5.asm) contains the source for ROM bank 5 (system images and associated routines)
-
-  * [elite-source-bank-6.asm](elite-source-bank-6.asm) contains the source for ROM bank 6 (sound, music, scroll text, save and load)
-
-  * [elite-source-bank-7.asm](elite-source-bank-7.asm) contains the source for ROM bank 7 (NMI handler, PPU routines, drawing lines and pixels, bank 7 switchyard, core maths routines)
-
-  * [elite-source-common.asm](elite-source-common.asm) contains common source code that is shared across all eight banks (variables, workspaces and macros)
-
-* Other source files:
-
-  * [elite-source-header.asm](elite-source-header.asm) contains the iNES header for the game
-
-* Files that are generated during the build process:
-
-  * [elite-build-options.asm](elite-build-options.asm) stores the make options in BeebAsm format so they can be included in the assembly process
+* [view-attributes](view-attributes) contains view attribute binaries that have been extracted from the game binary by the [unpack-data.py](../2-build-files/unpack-data.py) script
 
 ---
 
