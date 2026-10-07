@@ -7797,6 +7797,20 @@ IF _NTSC_HW
 
 .DrawEdgesScanNTSC
 
+ PHP                    ; If interrupts are currently disabled (the game
+ PLA                    ; disables them when it starts or restarts, as it
+ AND #%00000100         ; doesn't otherwise use them), stop the DMC timer
+ BEQ desn1              ; chain (see IRQHandlerNTSC in bank 7), as any of its
+ LDA #%00001111         ; interrupts that are pending would arrive at the wrong
+ STA SND_CHN            ; time when we enable interrupts below (the chain gets
+ LDA #0                 ; restarted at the next NMI)
+ STA irqStage
+
+.desn1
+
+ CLI                    ; Enable interrupts, so the DMC timer interrupts can
+                        ; get through
+
  JSR DrawBoxEdges       ; Draw the box edges (this also sets X to the drawing
                         ; bitplane)
 
@@ -7814,6 +7828,9 @@ IF _NTSC_HW
  STA rowPrevMid,X
  STA rowPrevHi,X
 
+ LDA #0                 ; And send whole rows, rather than a column window
+ STA winOff,X
+
 .srow1
 
  PLA                    ; Restore Y from the stack
@@ -7822,6 +7839,30 @@ IF _NTSC_HW
  RTS                    ; Return from the subroutine
 
 .srow2
+
+                        ; This is the space view, so first we pace the game, so
+                        ; that each frame is handed over at least
+                        ; FRAME_VBLANKS_NTSC_HW VBlanks after the last one
+
+.srow7
+
+ SETUP_PPU_FOR_ICON_BAR ; If the PPU has started drawing the icon bar, configure
+                        ; the PPU to use nametable 0 and pattern table 0
+
+ LDA nmiCounter         ; Loop back until nmiCounter - lastHandoverNMI is at
+ SEC                    ; least FRAME_VBLANKS_NTSC_HW
+ SBC lastHandoverNMI
+ CMP #FRAME_VBLANKS_NTSC_HW
+ BCC srow7
+
+ LDA nmiCounter         ; Also loop back until nmiCounter - lastFlipNMI is at
+ SEC                    ; least FLIP_GAP_NTSC_HW, so if the last flip was late
+ SBC lastFlipNMI        ; (because the NMI handler was still busy sending the
+ CMP #FLIP_GAP_NTSC_HW  ; frame before), this frame gets shown late too, rather
+ BCC srow7              ; than straight after
+
+ LDA nmiCounter         ; Record the time of this handover
+ STA lastHandoverNMI
 
  LDA SC                 ; Store SC(1 0) on the stack so we can use it as a
  PHA                    ; pointer to each row in the buffer
@@ -7835,6 +7876,11 @@ IF _NTSC_HW
  STA rowScan+2
  LDA nameBufferHiAddr,X
  STA SC+1
+
+ LDA #$FF               ; Reset the column window for the frame we are about to
+ STA winCurLo           ; scan (see WinRowNTSC)
+ LDA #0
+ STA winCurHi
 
  LDA #24                ; We build the mask for 24 rows, by shifting a bit for
  STA rowScanCount       ; each row into the top of the mask and shifting the
@@ -7863,6 +7909,17 @@ IF _NTSC_HW
  CMP #1                 ; Set the C flag if A is non-zero (i.e. the row is not
                         ; empty), or clear it if it is empty
 
+ BCC srow4              ; If the row is empty, jump to srow4 with C clear
+
+ LDA rowScanCount       ; If this is row 2 to 19 (i.e. rowScanCount is 22 or
+ CMP #23                ; less), update the column window with this row
+ BCS srow8
+ JSR RowSpanNTSC
+
+.srow8
+
+ SEC                    ; Set the C flag, as the row is not empty
+
 .srow4
 
  ROR rowScan+2          ; Shift the C flag into the top of the mask and shift
@@ -7883,6 +7940,8 @@ IF _NTSC_HW
  JMP srow3
 
 .srow6
+
+ JSR WindowNTSC         ; Work out the column window for this frame
 
  LDA rowScan            ; Set the rows to send to the rows that contain
  ORA rowPrevLo,X        ; something now, plus the rows that contained something
@@ -7908,6 +7967,318 @@ IF _NTSC_HW
  STA SC
 
  JMP srow1              ; Jump to srow1 to restore Y and return
+
+; ******************************************************************************
+;
+;       Name: RowSpanNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Update the column window with the leftmost and rightmost
+;             non-empty columns in a nametable row (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; Arguments:
+;
+;   SC(1 0)             The address of the row in the nametable buffer, which
+;                       must contain something in columns 2 to 31
+;
+; ******************************************************************************
+
+.RowSpanNTSC
+
+ LDY #2                 ; Find the leftmost non-empty column from column 2
+
+.rspn1
+
+ LDA (SC),Y
+ BNE rspn2
+ INY
+ BNE rspn1
+
+.rspn2
+
+ CPY winCurLo           ; Set winCurLo = min(winCurLo, Y)
+ BCS rspn3
+ STY winCurLo
+
+.rspn3
+
+ LDY #31                ; Find the rightmost non-empty column from column 31
+
+.rspn4
+
+ LDA (SC),Y
+ BNE rspn5
+ DEY
+ BNE rspn4
+
+.rspn5
+
+ CPY winCurHi           ; Set winCurHi = max(winCurHi, Y)
+ BCC rspn6
+ STY winCurHi
+
+.rspn6
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: WindowNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Work out the column window for the space view frame being handed
+;             over to the NMI handler (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; The window covers the columns used by this frame and the frame that was last
+; sent to this bitplane, so anything left over from that frame gets blanked out.
+; See WinRowNTSC for how it is used.
+;
+; Arguments:
+;
+;   X                   The drawing bitplane
+;
+; Returns:
+;
+;   X                   X is preserved
+;
+; ******************************************************************************
+
+.WindowNTSC
+
+ LDA #0                 ; Set winOff to zero (send whole rows) while we update
+ STA winOff,X           ; the window, so an NMI part-way through never sees a
+                        ; mix of old and new values (we set winOff last)
+
+ LDA rowPrevHi,X        ; If bit 7 of rowPrevHi is set, then either the whole
+ BMI wind6              ; buffer was sent to this bitplane, or the row masks
+                        ; don't know what is in the PPU, including the box
+                        ; edges in columns 0 and 1, so send whole rows this
+                        ; time (and remember this frame's columns for next time)
+
+ LDA winCurLo           ; Set winStart = min(winCurLo, colLo) - 1 (we store the
+                        ; first column minus one, as WinRowNTSC adds it with
+                        ; the C flag set)
+ CMP colLo,X
+ BCC wind2
+ LDA colLo,X
+
+.wind2
+
+ SEC
+ SBC #1
+ STA winStart,X
+
+ LDA colHi,X            ; Set A = max(winCurHi, colHi)
+ CMP winCurHi
+ BCS wind3
+ LDA winCurHi
+
+.wind3
+
+ CLC                    ; Set A = A - (winStart + 1) = window width - 1
+ SBC winStart,X
+
+ BCC wind6              ; If the result is negative, both frames are empty, so
+                        ; no rows will be sent and we leave winOff at zero
+
+ STA winTmp             ; Store the width - 1 in winTmp
+
+ LDA #LO(WIN_ROW_K)     ; Set (costHi costLo) = WIN_ROW_K
+ STA costLo,X
+ LDA #HI(WIN_ROW_K)
+ STA costHi,X
+
+ LDY winTmp             ; Add 11 for each entry in the window
+ INY
+
+.wind5
+
+ LDA costLo,X
+ CLC
+ ADC #11
+ STA costLo,X
+ BCC wind7
+ INC costHi,X
+
+.wind7
+
+ DEY
+ BNE wind5
+
+ LDA #31                ; Set winOff to the low byte of snam7 + (31 - (width -
+ SEC                    ; 1)) * 6, the entry point into the unrolled sends at
+ SBC winTmp             ; snam7 that sends the right number of entries (each
+ ASL A                  ; send takes six bytes of code)
+ STA rowScanCount
+ ASL A
+ CLC
+ ADC rowScanCount
+ ADC #LO(snam7)
+ STA winOff,X
+
+.wind6
+
+ LDA winCurLo           ; Store this frame's columns for next time
+ STA colLo,X
+ LDA winCurHi
+ STA colHi,X
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: lineImage
+;       Type: Variable
+;   Category: Drawing lines
+;    Summary: Image data for the horizontal line, vertical line and block
+;             images (NTSC hardware variant only, moved from bank 7)
+;
+; ******************************************************************************
+
+.lineImage
+
+                        ; The line images, moved here from bank 7 in the NTSC
+                        ; hardware variant (they are only used by this bank)
+
+ EQUB $FF, $00, $00, $00, $00, $00, $00, $00
+ EQUB $00, $FF, $00, $00, $00, $00, $00, $00
+ EQUB $00, $00, $FF, $00, $00, $00, $00, $00
+ EQUB $00, $00, $00, $FF, $00, $00, $00, $00
+ EQUB $00, $00, $00, $00, $FF, $00, $00, $00
+ EQUB $00, $00, $00, $00, $00, $FF, $00, $00
+ EQUB $00, $00, $00, $00, $00, $00, $FF, $00
+ EQUB $00, $00, $00, $00, $00, $00, $00, $FF
+ EQUB $00, $00, $00, $00, $00, $00, $FF, $FF
+ EQUB $00, $00, $00, $00, $00, $FF, $FF, $FF
+ EQUB $00, $00, $00, $00, $FF, $FF, $FF, $FF
+ EQUB $00, $00, $00, $FF, $FF, $FF, $FF, $FF
+ EQUB $00, $00, $FF, $FF, $FF, $FF, $FF, $FF
+ EQUB $00, $FF, $FF, $FF, $FF, $FF, $FF, $FF
+ EQUB $FF, $FF, $FF, $FF, $FF, $FF, $FF, $FF
+ EQUB $80, $80, $80, $80, $80, $80, $80, $80
+ EQUB $40, $40, $40, $40, $40, $40, $40, $40
+ EQUB $20, $20, $20, $20, $20, $20, $20, $20
+ EQUB $10, $10, $10, $10, $10, $10, $10, $10
+ EQUB $08, $08, $08, $08, $08, $08, $08, $08
+ EQUB $04, $04, $04, $04, $04, $04, $04, $04
+ EQUB $02, $02, $02, $02, $02, $02, $02, $02
+ EQUB $01, $01, $01, $01, $01, $01, $01, $01
+ EQUB $00, $00, $00, $00, $00, $FF, $FF, $FF
+ EQUB $FF, $FF, $FF, $00, $00, $00, $00, $00
+ EQUB $00, $00, $00, $00, $00, $C0, $C0, $C0
+ EQUB $C0, $C0, $C0, $00, $00, $00, $00, $00
+ EQUB $00, $00, $00, $00, $00, $03, $03, $03
+ EQUB $03, $03, $03, $00, $00, $00, $00, $00
+
+
+; ******************************************************************************
+;
+;       Name: SendInventoryToPPU
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Send X batches of 16 bytes from SC(1 0) to the PPU, for sending
+;             the inventory icon bar image (NTSC hardware variant only, moved
+;             here from bank 7)
+;
+; ******************************************************************************
+
+.SendInventoryToPPU
+
+ LDY #0                 ; Set Y as an index counter for the following block,
+                        ; which sends 16 bytes of data from SC(1 0) to the PPU,
+                        ; using Y as an index that starts at 0 and increments
+                        ; after each byte
+                        ;
+                        ; We repeat this process for X iterations
+
+                        ; We repeat the following code 16 times, so it sends
+                        ; one whole pattern of 16 bytes to the PPU (eight bytes
+                        ; for each bitplane)
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA (SC),Y             ; Send the Y-th byte of SC(1 0) to the PPU and increment
+ STA PPU_DATA           ; the index in Y
+ INY
+
+ LDA SC                 ; Set SC(1 0) = SC(1 0) + 16
+ CLC                    ;
+ ADC #16                ; Starting with the low bytes
+ STA SC
+
+ BCC smis1              ; And then the high bytes
+ INC SC+1
+
+.smis1
+
+ DEX                    ; Decrement the block counter in X
+
+ BNE SendInventoryToPPU ; Loop back to the start of the subroutine until we have
+                        ; sent X batches of 16 bytes
+
+ RTS                    ; Return from the subroutine
 
 ; ******************************************************************************
 ;
@@ -7943,6 +8314,10 @@ IF _NTSC_HW
  STA rowSendLo,X
  DEX
  BPL inva1
+
+ LDA #0                 ; Send whole rows, rather than a column window, in both
+ STA winOff             ; bitplanes
+ STA winOff+1
 
  PLA                    ; Restore X from the stack
  TAX

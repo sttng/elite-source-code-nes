@@ -152,11 +152,30 @@
                         ; difference in y-coordinate between the tops of the
                         ; characters in adjacent lines)
 
+IF _NTSC_HW
+
+ YPAL = _NTSC_HW_SHIFT  ; In the NTSC hardware variant, the picture can be moved
+                        ; down by _NTSC_HW_SHIFT scanlines (set with the shift
+                        ; build option), so the sprites have to move down by
+                        ; the same amount to stay lined up with the background,
+                        ; which is exactly what YPAL does for the PAL version
+
+ELSE
+
  YPAL = 6 AND _PAL      ; A margin of 6 pixels that is applied to a number of
                         ; y-coordinates for the PAL version only (as the PAL
                         ; version has a taller screen than NTSC)
 
- NMI_CYCLES_NTSC_HW = 2177  ; The cycle budget for each NMI in the NTSC hardware
+ENDIF
+
+ NMI_MARGIN_NTSC_HW = 200   ; The number of cycles that the VBlank routine adds
+                            ; to the cycle count before burning what is left,
+                            ; so a step that overruns the count by up to this
+                            ; much still re-enables the screen on time (this is
+                            ; included in NMI_CYCLES_NTSC_HW)
+
+ NMI_CYCLES_NTSC_HW = 1969 + (_NTSC_HW_SHIFT * 341 + 1) DIV 3 - _NTSC_HW_SHIFT
+                            ; The cycle budget for each NMI in the NTSC hardware
                             ; variant (_NTSC_HW)
                             ;
                             ; The NMI handler blanks the screen, sends data to
@@ -176,31 +195,110 @@
                             ; the nametable appears on scanline r + 1, which is
                             ; what the YPAL = 0 coordinates assume)
                             ;
+                            ; If the picture is moved down by _NTSC_HW_SHIFT
+                            ; scanlines, we restart that many lines later (there
+                            ; are 341 / 3 CPU cycles per scanline), so the
+                            ; picture lands on scanline r + 1 + _NTSC_HW_SHIFT
+                            ; and we get that much longer to send data
+                            ;
                             ; If this value changes, the restart must stay
                             ; well clear of dot 256 (the vertical increment)
-                            ; on scanline 7, or the picture will jump by a line
+                            ; on scanline 7 + _NTSC_HW_SHIFT, or the picture
+                            ; will jump by a line
 
  NAME8_CYCLES = 146         ; The cost in cycles of sending one batch of eight
                             ; nametable entries in SendNamesTail (NTSC hardware
                             ; variant only)
 
- ROW_SKIP_CYCLES = 131      ; The cost in cycles of skipping a nametable row in
+ ROW_SKIP_CYCLES = 146      ; The cost in cycles of skipping a nametable row in
                             ; NamesRowCheck (NTSC hardware variant only)
 
- ROW_FAIL_CYCLES = 108      ; The cost in cycles of checking a row in
+ ROW_FAIL_CYCLES = 117      ; The cost in cycles of checking a row in
                             ; NamesRowCheck when there aren't enough cycles left
                             ; to skip it (NTSC hardware variant only)
 
- ROW_FULL_CYCLES = 34       ; The cost in cycles of the checks in NamesRowCheck
+ ROW_FULL_CYCLES = 47       ; The cost in cycles of the checks in NamesRowCheck
                             ; when we are sending the whole buffer (NTSC hardware
                             ; variant only)
 
- ROW_CHECK_CYCLES = 73      ; The cost in cycles of checking whether a row needs
-                            ; sending in NamesRowCheck, which we add to the cost
-                            ; of sending the row (NTSC hardware variant only)
+ ROW_CHECK_CYCLES = 114     ; The cost in cycles of checking whether a row needs
+                            ; sending in NamesRowCheck and WinRowNTSC, which we
+                            ; add to the cost of sending the row (NTSC hardware
+                            ; variant only)
 
  PATT1_CYCLES = 160         ; The cost in cycles of sending one pattern in
                             ; SendPattsTail (NTSC hardware variant only)
+
+ IRQ_SYNC_K = 1095          ; The time in cycles from the DMC interrupt after the
+                            ; sync (17 output bytes later) to the start of the
+                            ; early VBlank, less 11 cycles per poll iteration
+                            ; (see IRQHandlerNTSC)
+
+ IRQ_START_HOPS = 14        ; The number of one-byte DMC hops after the 33-byte
+                            ; sample when starting the chain from a normal NMI
+
+ costHi = $0000            ; The high byte of the row cost for each bitplane, in
+                            ; two zero page bytes that are otherwise unused
+
+ WIN_ROW_K = 200            ; The cycle cost of sending a nametable row through
+                            ; the column window, over and above the 11 cycles per
+                            ; entry sent (see WinRowNTSC)
+
+ WIN_FAIL_CYCLES = 156     ; The cost of the checks when a row doesn't fit
+                            ; through the window
+
+ WIN_FIX_CYCLES = 55        ; The cost of moving on to the start of the next row
+                            ; after sending a row through the window, which
+                            ; WinFixNTSC subtracts from the cycle count
+
+ TAIL_ENTRY_CYCLES = 50    ; The cost of resuming a part-sent nametable row in
+                            ; NamesRowCheck before calling SendNamesTail (see
+                            ; TailEntryNTSC)
+
+ BAR_FIX_CYCLES = 10        ; The number of cycles that SendBarNamesToPPU
+                            ; overcharges when it sends the icon bar nametable
+                            ; entries but no pattern batch (see BarFixNTSC)
+
+ WIN_BAIL_CYCLES = 115       ; The cost of the row checks when we run out of
+                            ; cycles just before checking the column window (see
+                            ; WinBailNTSC)
+
+ WIN_BAIL_MIN = 64          ; WinRowNTSC stops sending if the cycle count is
+                            ; below this when it starts checking a row
+
+ FLIP_GAP_NTSC_HW = 2      ; The main loop only hands over a new frame once at
+                            ; least this many VBlanks have passed since the NMI
+                            ; handler noticed the last bitplane flip, so a late
+                            ; flip doesn't get followed by an early one (see
+                            ; FlipCheckNTSC)
+
+ flipPrev = $04C2           ; The value of hiddenBitplane at the start of the
+                            ; last NMI (one of four unused bytes after
+                            ; nameTileBuffHi)
+
+ lastFlipNMI = $04C3        ; The value of nmiCounter at the start of the first
+                            ; NMI after the last bitplane flip
+
+ IRQ_DRY_FRAMES = 5        ; The number of agreeing syncs needed before the first
+                            ; early VBlank
+
+ IRQ_SKIP_DELAY = 11        ; The delay (in five-cycle steps) in StartChainNTSC when
+                            ; the chain is already running
+
+ IRQ_SPLIT_DELAY = 70       ; The delay (in five-cycle steps) between seeing the
+                            ; sprite 0 hit and switching to the icon bar's
+                            ; nametable and pattern table
+
+ NMI_CYCLES_EARLY = NMI_CYCLES_NTSC_HW + 889 - (_NTSC_HW_SHIFT * 341 + 1) DIV 3
+                            ; The cycle budget when the VBlank routine starts
+                            ; early, just after the bottom of the picture (the
+                            ; extra cycles are the scanlines we gain)
+
+ FRAME_VBLANKS_NTSC_HW = 4  ; The minimum number of VBlanks per space view frame
+                            ; in the NTSC hardware variant (4 VBlanks at 60Hz is
+                            ; 66.7ms, which matches the average frame time of the
+                            ; PAL release in combat, so the game runs at the same
+                            ; speed, but with steadier pacing)
 
  NAME_FLIP_NTSC_HW = 12     ; The NMI handler swaps the visible and hidden
                             ; bitplanes once there are fewer than this many
@@ -346,7 +444,8 @@
 
 .ZP
 
- SKIP 2                 ; These bytes appear to be unused
+ SKIP 2                 ; These bytes appear to be unused (the NTSC hardware
+                        ; variant uses them for costHi)
 
 .RAND
 
@@ -5309,7 +5408,98 @@ IF _NTSC_HW
 
  SKIP 1                 ; The row counter in ScanRowsNTSC
 
- SKIP 24                ; These bytes appear to be unused
+.lastHandoverNMI
+
+ SKIP 1                 ; The value of nmiCounter when the last space view frame
+                        ; was handed over to the NMI handler, so we can pace the
+                        ; game loop (see DrawEdgesScanNTSC)
+
+.earlyVBlank
+
+ SKIP 1                 ; Bit 7 is set while the VBlank routine is being run
+                        ; early from the IRQ handler (see IRQHandlerNTSC), so
+                        ; the real NMI that arrives part-way through can be
+                        ; ignored, and the larger cycle budget is used
+
+.irqStage
+
+ SKIP 1                 ; What the next DMC timer interrupt should do (see
+                        ; IRQHandlerNTSC): 0 = stop, 1 = sync to the sprite 0
+                        ; hit, 2 = hop or start the early VBlank
+
+.irqHops
+
+ SKIP 1                 ; The number of one-byte DMC hops left before the
+                        ; final interrupt that starts the early VBlank
+
+.irqWait
+
+ SKIP 1                 ; The delay before the early VBlank starts, in units
+                        ; of eight cycles
+
+.irqWaitFine
+
+ SKIP 1                 ; The remaining delay (0 to 7 cycles)
+
+.winCurLo
+
+ SKIP 1                 ; The leftmost and rightmost non-empty columns in the
+                        ; space view frame being scanned (see DrawEdgesScanNTSC)
+.winCurHi
+
+ SKIP 1
+
+.winTmp
+
+ SKIP 1                 ; Workspace for DrawEdgesScanNTSC
+
+.padTmp
+
+ SKIP 1                 ; Workspace for ReadControllersNTSC
+
+.padPrev
+
+ SKIP 1
+
+.padIndex
+
+ SKIP 1
+
+.irqExpectX
+
+ SKIP 1                 ; The poll count we expect in the next sync, or $FF if
+                        ; we don't know
+
+.irqDry
+
+ SKIP 1                 ; The number of agreeing syncs still needed before we
+                        ; start the VBlank early
+
+.colLo
+
+ SKIP 2                 ; The leftmost non-empty column (2 to 31) in rows 2 to
+                        ; 19 of the space view frame last handed over to each
+                        ; bitplane, or $FF if none
+
+.colHi
+
+ SKIP 2                 ; The rightmost non-empty column, or 0 if none
+
+.winStart
+
+ SKIP 2                 ; The first column to send in each nametable row for
+                        ; each bitplane (see WinRowNTSC)
+
+.winOff
+
+ SKIP 2                 ; The offset into the 32 unrolled sends at snam7 that
+                        ; sends the right number of entries for the window, or
+                        ; 0 to send whole rows
+
+.costLo
+
+ SKIP 2                 ; The low byte of the cycle cost of sending one row
+                        ; through the window (the high byte is in costHi)
 
 ELSE
 

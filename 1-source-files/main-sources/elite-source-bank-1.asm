@@ -14657,6 +14657,176 @@ ENDIF
 ;
 ; ******************************************************************************
 
+IF _NTSC_HW
+
+; ******************************************************************************
+;
+;       Name: DV41
+;       Type: Subroutine
+;   Category: Maths (Arithmetic)
+;    Summary: Calculate (P R) = 256 * DELTA / A
+;
+; ------------------------------------------------------------------------------
+;
+; In the NTSC hardware variant, DV41 and DVID4 live here rather than in ROM bank
+; 7, as they are only called from this bank, and this frees up space in bank 7
+; for FlipCheckNTSC.
+;
+; ******************************************************************************
+
+.DV41
+
+ STA Q                  ; Store A in Q
+
+ LDA DELTA              ; Fetch the speed from DELTA into A
+
+                        ; Fall through into DVID4 to do:
+                        ;
+                        ;   (P R) = 256 * A / Q
+                        ;         = 256 * DELTA / A
+
+; ******************************************************************************
+;
+;       Name: DVID4
+;       Type: Subroutine
+;   Category: Maths (Arithmetic)
+;    Summary: Calculate (P R) = 256 * A / Q
+;  Deep dive: Shift-and-subtract division
+;
+; ------------------------------------------------------------------------------
+;
+; Calculate the following division and remainder:
+;
+;   P = A / Q
+;
+;   R = remainder as a fraction of Q, where 1.0 = 255
+;
+; Another way of saying the above is this:
+;
+;   (P R) = 256 * A / Q
+;
+; This uses the same shift-and-subtract algorithm as TIS2, but this time we
+; keep the remainder and the loop is unrolled.
+;
+; ------------------------------------------------------------------------------
+;
+; Returns:
+;
+;   C flag              The C flag is cleared
+;
+; ******************************************************************************
+
+.DVID4
+
+ ASL A                  ; Shift A left and store in P (we will build the result
+ STA P                  ; in P)
+
+ LDA #0                 ; Set A = 0 for us to build a remainder
+
+                        ; We now repeat the following five instruction block
+                        ; eight times, one for each bit in P. In the BBC Micro
+                        ; cassette and disc versions of Elite the following is
+                        ; done with a loop, but it is marginally faster to
+                        ; unroll the loop and have eight copies of the code,
+                        ; though it does take up a bit more memory (though that
+                        ; isn't a big concern when you have a 6502 Second
+                        ; Processor)
+
+ ROL A                  ; Shift A to the left
+
+ CMP Q                  ; If A < Q skip the following subtraction
+ BCC P%+4
+
+ SBC Q                  ; A >= Q, so set A = A - Q
+
+ ROL P                  ; Shift P to the left, pulling the C flag into bit 0
+
+ ROL A                  ; Repeat for the second time
+ CMP Q
+ BCC P%+4
+ SBC Q
+ ROL P
+
+ ROL A                  ; Repeat for the third time
+ CMP Q
+ BCC P%+4
+ SBC Q
+ ROL P
+
+ ROL A                  ; Repeat for the fourth time
+ CMP Q
+ BCC P%+4
+ SBC Q
+ ROL P
+
+ ROL A                  ; Repeat for the fifth time
+ CMP Q
+ BCC P%+4
+ SBC Q
+ ROL P
+
+ ROL A                  ; Repeat for the sixth time
+ CMP Q
+ BCC P%+4
+ SBC Q
+ ROL P
+
+ ROL A                  ; Repeat for the seventh time
+ CMP Q
+ BCC P%+4
+ SBC Q
+ ROL P
+
+ ROL A                  ; Repeat for the eighth time
+ CMP Q
+ BCC P%+4
+ SBC Q
+ ROL P
+
+ LDX #0                 ; Set X = 0 so this unrolled version of DVID4 also
+                        ; returns X = 0
+
+ STA widget             ; This contains the code from the LL28+4 routine, so
+ TAX                    ; this section is exactly equivalent to a JMP LL28+4
+ BEQ LLfix22            ; call, but is slightly faster as it's been inlined
+ LDA logL,X             ; (so it converts the remainder in A into an integer
+ LDX Q                  ; representation of the fractional value A / Q, in R,
+ SEC                    ; where 1.0 = 255, and it also clears the C flag
+ SBC logL,X
+ BMI noddlog22
+ LDX widget
+ LDA log,X
+ LDX Q
+ SBC log,X
+ BCS LL222
+ TAX
+ LDA antilog,X
+
+.LLfix22
+
+ STA R                  ; This is also part of the inline LL28+4 routine
+ RTS
+
+.LL222
+
+ LDA #255               ; This is also part of the inline LL28+4 routine
+ STA R
+ RTS
+
+.noddlog22
+
+ LDX widget             ; This is also part of the inline LL28+4 routine
+ LDA log,X
+ LDX Q
+ SBC log,X
+ BCS LL222
+ TAX
+ LDA antilogODD,X
+ STA R
+ RTS
+
+ENDIF
+
  FOR I%, P%, $BFF9
 
   EQUB $FF              ; Pad out the rest of the ROM bank with $FF

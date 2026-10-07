@@ -1774,6 +1774,8 @@ ENDIF
 
  SUBTRACT_CYCLES 134    ; Subtract 134 from the cycle count
 
+.sbuf12
+
  LDA enableBitplanes    ; If bitplanes are enabled then enableBitplanes will be
  EOR hiddenBitplane     ; 1, so this flips hiddenBitplane between 0 and 1 when
  STA hiddenBitplane     ; bitplanes are enabled, and does nothing when they
@@ -1901,6 +1903,8 @@ ENDIF
  BEQ sbuf9              ; (we must be on the Start screen), so jump to sbuf9 to
                         ; update the cycle count and skip the following two
                         ; instructions
+
+.sbuf13
 
  STX hiddenBitplane     ; Set the hidden bitplane to be the same as the NMI
                         ; bitplane, so the rest of the NMI handler update the
@@ -2829,7 +2833,18 @@ ENDIF
 
 .snam1
 
+IF _NTSC_HW
+
+ ADD_CYCLES_CLC 19      ; Add 19 to the cycle count (the NTSC hardware variant
+                        ; adds back less than the other variants, as this path
+                        ; takes longer than the original count allows for, which
+                        ; matters when the VBlank is timed to the cycle)
+
+ELSE
+
  ADD_CYCLES_CLC 58      ; Add 58 to the cycle count
+
+ENDIF
 
  JMP RTS1               ; Return from the subroutine (as RTS1 contains an RTS)
 
@@ -2950,9 +2965,40 @@ IF _NTSC_HW
  JMP NamesRowCheck      ; Jump to NamesRowCheck to skip any rows that don't need
                         ; sending, and send the rest (NTSC hardware variant)
 
- FOR I%, 1, 15          ; Pad with unused bytes so the rest of the bank stays at
-  EQUB $FF              ; the same address (the other variants have 18 bytes of
- NEXT                   ; code here)
+.snam11
+
+                        ; The other variants have 18 bytes of code here, so we
+                        ; use the 15 spare bytes for NMIEntryNTSC
+
+; ******************************************************************************
+;
+;       Name: NMIEntryNTSC
+;       Type: Subroutine
+;   Category: Utility routines
+;    Summary: The NMI vector in the NTSC hardware variant
+;
+; ------------------------------------------------------------------------------
+;
+; If the VBlank routine has already been started early by the IRQ handler, the
+; real NMI arrives part-way through it, so we ignore it.
+;
+; ******************************************************************************
+
+.NMIEntryNTSC
+
+ BIT earlyVBlank        ; If bit 7 of earlyVBlank is set, ignore this NMI
+ BMI nmie1
+
+ JMP NMI                ; Otherwise run the NMI handler as normal
+
+.nmie1
+
+ RTI                    ; Return from the interrupt handler
+
+
+ FOR I%, P%, snam11 + 14    ; Pad with unused bytes so the rest of the bank stays
+  EQUB $FF                  ; at the same address
+ NEXT
 
 ELSE
 
@@ -2998,6 +3044,14 @@ ELSE
 ENDIF
 
 .snam7
+
+IF _NTSC_HW
+
+ ASSERT HI(snam7) = HI(snam7 + 31 * 6)  ; WinRowNTSC assumes that all the entry
+                                        ; points into these sends are in the
+                                        ; same page
+
+ENDIF
 
  SEND_DATA_TO_PPU 32    ; Send 32 bytes from dataForPPU to the PPU, starting at
                         ; index Y and updating Y to point to the byte after the
@@ -3274,6 +3328,225 @@ IF _NTSC_HW
  LDA boxEdge2
 
  RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: ReadControllersNTSC
+;       Type: Subroutine
+;   Category: Keyboard
+;    Summary: Read the controllers in a way that can't be corrupted by DMC
+;             sample fetches (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; The NTSC hardware variant uses the APU's DMC channel as a timer (see
+; IRQHandlerNTSC), and on the NES, a DMC sample fetch that happens during a read
+; of the controller port can make the controller skip a button. So we read each
+; controller until we get the same eight buttons twice in a row, and only then
+; shift the results into the controller variables, exactly as ScanButtons does.
+;
+; ******************************************************************************
+
+.ReadControllersNTSC
+
+ LDX #0                 ; Read controller 1
+ JSR ReadPadNTSC
+
+ LDX numberOfPilots     ; If only one pilot is configured, we are done
+ BEQ rpad9
+
+                        ; Otherwise fall through into ReadPadNTSC to read
+                        ; controller 2 (as numberOfPilots is 1)
+
+.ReadPadNTSC
+
+ STX padIndex           ; Store the controller number
+
+ JSR ReadPadRaw         ; Read the eight buttons into A
+
+.rpad1
+
+ STA padPrev            ; Read the buttons again until we get the same result
+ JSR ReadPadRaw         ; twice in a row
+ CMP padPrev
+ BNE rpad1
+
+ STA padTmp             ; Store the buttons, with A in bit 7 down to right in
+                        ; bit 0
+
+ LDY #0                 ; Shift each button into bit 7 of its controller
+                        ; variable, as in ScanButtons
+
+.rpad2
+
+ LDA padOffsets,Y
+ CLC
+ ADC padIndex
+ TAX
+
+ ASL padTmp
+ ROR controller1Down,X
+
+ INY
+ CPY #8
+ BNE rpad2
+
+.rpad9
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: StartChainNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Start the DMC timer chain at the start of a normal NMI (NTSC
+;             hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; See IRQHandlerNTSC for details.
+;
+; ******************************************************************************
+
+.StartChainNTSC
+
+ BIT earlyVBlank        ; If this VBlank routine is being run early from the
+ BMI scha1              ; IRQ handler, the chain is already running, so return
+
+ LDA SND_CHN            ; If the DMC is still playing a sample, the chain is
+ AND #%00010000         ; still running (which happens after the first sync),
+ BNE scha3              ; so jump to scha3 to leave it alone
+
+ LDA #%00001111         ; Stop the DMC and clear its interrupt flag
+ STA SND_CHN
+
+ LDA #%10001111         ; Set the DMC to generate an interrupt at the end of
+ STA DMC_FREQ           ; the sample, at the fastest rate (432 cycles per byte)
+
+ LDA #HI(dmcSilence-$C000)*4    ; Point the DMC at the silent sample
+ STA DMC_START
+
+ LDA #2                 ; Play 33 bytes and then IRQ_START_HOPS one-byte hops,
+ STA DMC_LEN            ; so the sync interrupt comes up to 7 lines before the
+ LDA #IRQ_START_HOPS    ; sprite 0 hit (we don't know where the DMC grid is
+ STA irqHops            ; yet, so this is as close as we can get)
+
+ LDX #1                 ; Set X = 1 (sync next) and A = %00011111 (start the
+ LDA #%00011111         ; DMC), for the space view
+
+ LDY QQ11               ; We only use the chain in the space view, so for any
+ BEQ scha2              ; other view, set X = 0 (stop) and A = %00001111 (keep
+ LDX #0                 ; the DMC stopped), taking the same number of cycles
+ LDA #%00001111         ; (give or take a few), so the screen is re-enabled at
+                        ; the same point
+
+.scha2
+
+ STA SND_CHN            ; Start the DMC (or not)
+
+ STX irqStage           ; Set the next stage of the chain
+
+ LDA #$FF               ; We don't know where the DMC grid is yet, so we can't
+ STA irqExpectX         ; check the sync against an expected value
+
+.scha1
+
+ RTS                    ; Return from the subroutine
+
+.scha3
+
+ LDX #IRQ_SKIP_DELAY    ; Waste the same number of cycles as starting the chain
+                        ; would take, so the screen is still re-enabled at the
+.scha4                  ; right point
+
+ DEX
+ BNE scha4
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: StartEarlyNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Turn off rendering at the bottom of the picture and run the
+;             VBlank routine early (NTSC hardware variant only)
+;
+; ******************************************************************************
+
+.StartEarlyNTSC
+
+ BIT ppuCtrlCopy        ; If NMIs are disabled, the game is setting up the
+ BPL seny2              ; screen, so don't run the VBlank routine
+
+ LDA irqDry             ; If irqDry is non-zero, decrement it and return, as we
+ BEQ seny1              ; haven't seen enough syncs agree yet
+ DEC irqDry
+
+.seny2
+
+ JMP irqs2
+
+.seny1
+
+ LDA #0                 ; Turn off rendering, as the picture is finished
+ STA PPU_MASK
+
+ SEC                    ; Flag that the VBlank routine is running early by
+ ROR earlyVBlank        ; setting bit 7 of earlyVBlank (we only ever check bit
+                        ; 7, which is clear here)
+
+ PLA                    ; Restore the registers and run the VBlank routine, so
+ TAY                    ; it starts now instead of at scanline 241 (it ends with
+ PLA                    ; an RTI that returns from this interrupt)
+ TAX
+ PLA
+ JMP NMI
+
+; ******************************************************************************
+;
+;       Name: RestartScreenNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Send the sprite data to the PPU and re-enable the screen (NTSC
+;             hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; The other variants send the sprite data to the PPU with OAM DMA at the start
+; of the NMI handler. The NTSC hardware variant does it here instead, at the end
+; of the NMI handler, just before the screen is re-enabled.
+;
+; This is because the PPU's sprite memory (OAM) is dynamic RAM that only gets
+; refreshed while the screen is being drawn. On an NTSC PPU it is only reliable
+; for about the length of a normal VBlank (around 1.3 ms) without a refresh,
+; but this variant keeps the screen off for longer than that (until scanline 7,
+; or later if NTSC_HW_SHIFT is set), so sending the sprite data right at the end
+; means it doesn't have time to decay. The DMA takes the same time wherever it
+; is, so the amount of data we can send in each VBlank is unchanged.
+;
+; ******************************************************************************
+
+.RestartScreenNTSC
+
+ LDA #0                 ; Write 0 to OAM_ADDR so we can use OAM_DMA to send
+ STA OAM_ADDR           ; sprite data to the PPU
+
+ LDA #$02               ; Write $02 to OAM_DMA to upload 256 bytes of sprite
+ STA OAM_DMA            ; data from the sprite buffer at $02xx into the PPU
+
+ LDA #%00011110         ; Configure the PPU by setting PPU_MASK to show the
+ STA PPU_MASK           ; background and sprites, including in the leftmost 8
+                        ; pixels, as in the other variants
+
+ LSR earlyVBlank        ; Clear bit 7 of earlyVBlank, as the VBlank routine is
+                        ; now done (any real NMI during an early VBlank routine
+                        ; has already been and gone)
+
+ RTS                    ; Return from the subroutine
+
+
 
  IF P% < DrawBoxEdges + 271         ; Pad with unused bytes so this block is the
   FOR I%, P%, DrawBoxEdges + 270    ; same size as the original DrawBoxEdges
@@ -3651,14 +3924,24 @@ ENDIF
 
 IF _NTSC_HW
 
- LDA #HI(NMI_CYCLES_NTSC_HW)  ; Set cycleCount = NMI_CYCLES_NTSC_HW
- STA cycleCount+1             ;
- LDA #LO(NMI_CYCLES_NTSC_HW)  ; A real NTSC console only has 20 lines of VBlank
- STA cycleCount               ; (around 2270 CPU cycles) compared to 70 on PAL,
-                              ; so we only have time to send roughly a third as
-                              ; much data to the PPU in each NMI, and the
-                              ; screen is re-enabled at a fixed point near the
-                              ; top of the frame (see NMI_CYCLES_NTSC_HW)
+ JSR SetBudgetNTSC      ; Set cycleCount to NMI_CYCLES_NTSC_HW, or to the
+                        ; larger NMI_CYCLES_EARLY if the IRQ handler started
+                        ; this VBlank routine early, at the bottom of the
+                        ; picture
+                        ;
+                        ; A real NTSC console only has 20 lines of VBlank
+                        ; (around 2270 CPU cycles) compared to 70 on PAL, so we
+                        ; only have time to send roughly a third as much data
+                        ; to the PPU in each NMI, and the screen is re-enabled
+                        ; at a fixed point near the top of the frame (see
+                        ; NMI_CYCLES_NTSC_HW)
+
+ JMP nmib1              ; Skip the padding
+
+ EQUB $FF, $FF          ; Pad with unused bytes so the rest of the bank stays at
+                        ; the same address
+
+.nmib1
 
 ELIF _NTSC
 
@@ -3685,8 +3968,18 @@ ENDIF
                         ; registers accordingly, and clearing the buffers if
                         ; required
 
+IF _NTSC_HW
+
+ JSR ReadControllersNTSC    ; Read the buttons on the controllers in a way that
+                            ; can't be corrupted by DMC sample fetches (NTSC
+                            ; hardware variant)
+
+ELSE
+
  JSR ReadControllers    ; Read the buttons on the controllers and update the
                         ; control variables
+
+ENDIF
 
  LDA autoPlayDemo       ; If bit 7 of autoPlayDemo is clear then the demo is not
  BPL inmi1              ; being played automatically, so jump to inmi1 to skip
@@ -3804,11 +4097,32 @@ ENDIF
  INC nmiCounter         ; Increment the NMI counter so it increments every
                         ; VBlank
 
+IF _NTSC_HW
+
+ JSR StartChainNTSC     ; Start the DMC timer chain for this frame, if we are
+                        ; not already running the VBlank routine early (see
+                        ; IRQHandlerNTSC)
+
+ JMP spsp1              ; The NTSC hardware variant sends the sprite data at the
+                        ; end of the NMI handler instead, just before the
+                        ; screen is re-enabled (see RestartScreenNTSC), so jump
+                        ; past the OAM DMA
+
+ FOR I%, 1, 4           ; Pad with unused bytes so the rest of the bank stays at
+  EQUB $FF              ; the same address (the other variants have 10 bytes of
+ NEXT                   ; code here)
+
+.spsp1
+
+ELSE
+
  LDA #0                 ; Write 0 to OAM_ADDR so we can use OAM_DMA to send
  STA OAM_ADDR           ; sprite data to the PPU
 
  LDA #$02               ; Write $02 to OAM_DMA to upload 256 bytes of sprite
  STA OAM_DMA            ; data from the sprite buffer at $02xx into the PPU
+
+ENDIF
 
  LDA #%00000000         ; Configure the PPU by setting PPU_MASK as follows:
  STA PPU_MASK           ;
@@ -4052,9 +4366,9 @@ ENDIF
 
 IF _NTSC_HW
 
- LDA cycleCount         ; Add 150 to cycleCount
+ LDA cycleCount         ; Add NMI_MARGIN_NTSC_HW to cycleCount
  CLC                    ;
- ADC #150               ; The other variants add 100 here, which means every
+ ADC #NMI_MARGIN_NTSC_HW ; The other variants add 100 here, which means every
                         ; NMI burns an extra 100 cycles before re-enabling the
                         ; screen; the NTSC hardware variant only needs enough to
                         ; stop the count ending up negative after a step that
@@ -4062,9 +4376,9 @@ IF _NTSC_HW
                         ; SendOtherBitplane), as a negative count would skip the
                         ; burn loop in ClearBuffers and re-enable the screen
                         ; at the wrong time (the most we can overdraw by is
-                        ; around 140 cycles, when a row doesn't fit and then
-                        ; neither does a batch of eight in SendNamesTail), so
-                        ; we add 150 here and include the extra in
+                        ; around 190 cycles, when we run out part-way through
+                        ; checking a row for the column window), so we add
+                        ; NMI_MARGIN_NTSC_HW here and include the extra in
                         ; NMI_CYCLES_NTSC_HW
 
 ELSE
@@ -4090,6 +4404,18 @@ ENDIF
 
 .upsc1
 
+IF _NTSC_HW
+
+ JMP RestartScreenNTSC  ; Send the sprite data to the PPU and re-enable the
+                        ; screen, returning from the subroutine using a tail
+                        ; call (NTSC hardware variant)
+
+ EQUB $FF, $FF, $FF     ; Pad with unused bytes so the rest of the bank stays at
+                        ; the same address (the other variants have 6 bytes of
+                        ; code here)
+
+ELSE
+
  LDA #%00011110         ; Configure the PPU by setting PPU_MASK as follows:
  STA PPU_MASK           ;
                         ;   * Bit 0 clear = normal colour (i.e. not monochrome)
@@ -4102,6 +4428,8 @@ ENDIF
                         ;   * Bit 7 clear = do not intensify reds
 
  RTS                    ; Return from the subroutine
+
+ENDIF
 
 ; ******************************************************************************
 ;
@@ -4188,10 +4516,12 @@ IF _NTSC_HW
                         ; a real NTSC console, returning from the subroutine
                         ; using a tail call
 
- EQUB $FF, $FF, $FF     ; Pad with eight unused bytes so the rest of the bank
- EQUB $FF, $FF, $FF     ; stays at exactly the same addresses as the NTSC
- EQUB $FF, $FF          ; variant (the cycle counts in the NMI handler depend
-                        ; on page-crossing timings, so we don't move any code)
+.irqDrift
+
+ EQUB 115, 76, 37, 254, 214, 175    ; This is irqDrift (see IrqTimingNTSC),
+                                    ; in six of the eight spare bytes left
+                                    ; here so the rest of the bank stays at
+ EQUB $FF, $FF                      ; the same address
 
 ELSE
 
@@ -4331,9 +4661,23 @@ IF _NTSC_HW
                         ; re-enabled at a more consistent point (NTSC hardware
                         ; variant only)
 
- FOR I%, 1, 12          ; Pad with unused bytes so the rest of the bank stays
-  EQUB $FF              ; at the same address (the other variants have a
- NEXT                   ; 12-byte ADD_CYCLES and a JMP here)
+                        ; The other variants have a 12-byte ADD_CYCLES and a
+                        ; JMP here, so we use the spare bytes for the
+                        ; controller offsets used by ReadControllersNTSC
+
+.padOffsets
+
+ EQUB controller1A - controller1Down
+ EQUB controller1B - controller1Down
+ EQUB controller1Select - controller1Down
+ EQUB controller1Start - controller1Down
+ EQUB controller1Up - controller1Down
+ EQUB 0
+ EQUB controller1Left - controller1Down
+ EQUB controller1Right - controller1Down
+
+ EQUB $FF, $FF, $FF, $FF    ; Pad with unused bytes so the rest of the bank stays
+                            ; at the same address
 
 ELSE
 
@@ -5589,15 +5933,32 @@ IF _NTSC_HW
 
 .NamesRowCheck
 
+ LDA cycleCount+1       ; If the cycle count is already negative (which can
+ BPL nrow10             ; happen when a row only just fits and the end of a
+ JMP snam10             ; buffer page costs a few cycles more), jump to snam10
+                        ; to stop sending data in this VBlank, rather than
+                        ; spending even more cycles checking a row that can't
+                        ; fit (this keeps the overdraw small, so we only need
+                        ; a small margin at the end of the NMI handler)
+
+.nrow10
+
  LDA nameTileCounter    ; If nameTileCounter is not a multiple of 4 then we are
  AND #3                 ; part-way through a row (because SendNamesTail ran out
  BEQ nrow9              ; of time in the last VBlank), so jump to SendNamesTail
- JMP SendNamesTail      ; to send the rest of the row in batches of eight, as
+ JMP TailEntryNTSC      ; to send the rest of the row in batches of eight, as
                         ; the batches of 32 in SendNametableNow must start at
                         ; the start of a row (they only check for the end of a
                         ; page of the buffer at the end of each batch)
 
 .nrow9
+
+ TYA                    ; If Y is not at the start of a row, then the last row
+ AND #31                ; was sent through the column window and we stopped
+ BEQ nrow11             ; part-way along it, so call WinFixNTSC to move Y and
+ JSR WinFixNTSC         ; the PPU address on to the start of this row
+
+.nrow11
 
  LDA bitplaneFlags,X    ; If bit 2 of the bitplane flags is set then we are
  AND #%00000100         ; sending the whole buffer (which happens when a new
@@ -5692,6 +6053,12 @@ IF _NTSC_HW
                         ; row in batches of eight
 
 .nrow6
+
+ JMP WinRowNTSC         ; Send just the part of the row inside the column window
+                        ; if we can (see WinRowNTSC), which jumps back to nrow12
+                        ; if it needs to send the whole row
+
+.nrow12
 
  SUBTRACT_CYCLES 393+ROW_CHECK_CYCLES   ; Subtract the cost of sending a row and
                                         ; checking it from the cycle count
@@ -5867,6 +6234,150 @@ IF _NTSC_HW
  JMP DrawEdgesScanNTSC  ; Call DrawEdgesScanNTSC, which is already paged into
                         ; memory, returning from the subroutine using a tail
                         ; call
+
+; ******************************************************************************
+;
+;       Name: IrqTimingNTSC
+;       Type: Subroutine
+;   Category: Utility routines
+;    Summary: Work out the DMC hops and the delay to the early VBlank from the
+;             sprite 0 sync (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; Arguments:
+;
+;   X                   The number of 11-cycle poll iterations between the sync
+;                       interrupt and the sprite 0 hit
+;
+; ******************************************************************************
+
+.IrqTimingNTSC
+
+ STX padIndex           ; Store the poll count
+
+ LDA #LO(IRQ_SYNC_K)    ; Set (Y A) = IRQ_SYNC_K + 11 * X, the number of cycles
+ LDY #HI(IRQ_SYNC_K)    ; from the end of the 17-byte sample to the early
+ LDX #11                ; VBlank, by adding X eleven times
+
+.itim1
+
+ CLC
+ ADC padIndex
+ BCC itim2
+ INY
+
+.itim2
+
+ DEX
+ BNE itim1
+
+ LDX #$FF               ; Count how many 432-cycle hops fit into (Y A), leaving
+                        ; the remainder in (irqWaitFine irqWait)
+.itim3
+
+ INX
+ STA irqWait
+ STY irqWaitFine
+ SEC
+ SBC #LO(432)
+ PHA
+ TYA
+ SBC #HI(432)
+ TAY
+ PLA
+ BCS itim3
+
+ STX irqHops            ; Store the number of hops
+
+ LDA padIndex           ; Set irqExpectX to the poll count we expect in the next
+ CLC                    ; frame's sync (the DMC grid moves 27.33 cycles later
+ ADC irqDrift,X         ; relative to the screen in each frame, and the chain
+ STA irqExpectX         ; is 66 + hops samples long)
+
+ LDA irqWait            ; The remainder is less than 432, so split it into
+ AND #7                 ; remainder / 8 + 1 (for the eight-cycle loop) and
+ PHA                    ; remainder mod 8
+ LDA irqWaitFine
+ LSR A
+ LDA irqWait
+ ROR A
+ LSR A
+ LSR A
+ CLC
+ ADC #1
+ STA irqWait
+ PLA
+ STA irqWaitFine
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: ReadPadRaw
+;       Type: Subroutine
+;   Category: Keyboard
+;    Summary: Read the eight buttons on controller X into A (NTSC hardware
+;             variant only)
+;
+; ******************************************************************************
+
+.ReadPadRaw
+
+ LDA #1                 ; Latch the button positions
+ STA JOY1
+ LSR A
+ STA JOY1
+
+ LDY #8                 ; Read eight buttons from controller X into padTmp
+
+.rraw1
+
+ LDA JOY1,X
+ AND #%00000011
+ CMP #%00000001
+ ROL padTmp
+ DEY
+ BNE rraw1
+
+ LDA padTmp             ; Return the result in A
+
+ RTS
+
+
+
+
+
+; ******************************************************************************
+;
+;       Name: WinFixNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Move Y and the PPU address on to the start of the next row after
+;             sending a window (NTSC hardware variant only)
+;
+; ******************************************************************************
+
+.WinFixNTSC
+
+ TYA                    ; Set Y to the start of the next row, moving on to the
+ ORA #31                ; next page of the buffer if Y wraps around
+ TAY
+ INY
+ BNE wfix1
+ INC dataForPPU+1
+
+.wfix1
+
+ LDA dataForPPU+1       ; Set the PPU address to match
+ CLC
+ ADC ppuToBuffNameHi,X
+ STA PPU_ADDR
+ STY PPU_ADDR
+
+ JMP WinChargeNTSC      ; Subtract the cost of this routine from the cycle
+                        ; count and return from the subroutine
+
 
  IF P% < FillMemory + 672         ; Pad with unused bytes so this block is the
   FOR I%, P%, FillMemory + 671    ; same size as the original (672 bytes),
@@ -6873,6 +7384,161 @@ ENDIF
 ;
 ; ******************************************************************************
 
+IF _NTSC_HW
+
+                        ; In the NTSC hardware variant, SendInventoryToPPU lives
+                        ; in bank 3 (the only bank that calls it), which frees
+                        ; up this block for the NTSC routines below
+
+.inventoryNTSC
+
+; ******************************************************************************
+;
+;       Name: EarlyDelayNTSC
+;       Type: Subroutine
+;   Category: Utility routines
+;    Summary: Wait until scanline 233 and start the VBlank routine early (NTSC
+;             hardware variant only)
+;
+; ******************************************************************************
+
+.EarlyDelayNTSC
+
+ LDX irqWait            ; Wait for 8 * irqWait cycles
+
+.irqs9
+
+ DEX                    ; Each loop takes 8 cycles (the JMP is just a three-cycle
+ JMP irqs15             ; delay that doesn't affect the Z flag)
+
+.irqs15
+
+ BNE irqs9
+
+ LDA irqWaitFine        ; Wait for irqWaitFine more cycles (0 to 7)
+ LSR A
+ BCS irqs10
+
+.irqs10
+
+ LSR A
+ BCC irqs11
+ JMP irqs11
+
+.irqs11
+
+ LSR A
+ BCC irqs13
+ NOP
+ JMP irqs13
+
+.irqs13
+
+ JMP StartEarlyNTSC     ; Turn off rendering and run the VBlank routine
+
+
+; ******************************************************************************
+;
+;       Name: WinRowNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Send the part of a nametable row inside the column window (NTSC
+;             hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; In the space view, DrawEdgesScanNTSC works out the leftmost and rightmost
+; columns that contain anything in rows 2 to 19, in both the new frame and the
+; frame that was last sent to this bitplane (as anything there has to be blanked
+; out). Only the columns between them can have changed, so we send just that
+; window of each row, by jumping into the middle of the 32 unrolled sends at
+; snam7, so they send exactly the right number of entries. The rest of snam7
+; then carries on as normal, and WinFixNTSC moves Y and the PPU address on to
+; the start of the next row.
+;
+; We jump here from nrow6 with X = nmiBitplane, Y pointing to the start of the
+; row in the buffer, and the PPU address set to the start of the row. If we can't
+; use the window, or there isn't enough time left for it, we jump back to nrow12
+; to carry on as before.
+;
+; ******************************************************************************
+
+.WinRowNTSC
+
+ LDA cycleCount+1       ; If the cycle count is less than WIN_BAIL_MIN (which
+ BMI wrow5              ; can happen when WinFixNTSC has just moved us on to
+ BNE wrow4              ; the start of this row), jump to WinBailNTSC to stop
+ LDA cycleCount         ; sending, as checking the window and then finding that
+ CMP #WIN_BAIL_MIN      ; the row doesn't fit would overrun the margin that the
+ BCS wrow4              ; NMI keeps after the cycle count runs out
+
+.wrow5
+
+ JMP WinBailNTSC
+
+.wrow4
+
+ LDA nameTileCounter    ; Rows 0 and 1 (the view title) always get sent in full
+ CMP #8
+ BCC wrow2
+
+ LDA winOff,X           ; If winOff is zero, send the whole row
+ BEQ wrow2
+
+ LDA cycleCount         ; Subtract the cost of sending the row through the
+ SEC                    ; window from the cycle count, but only store the
+ SBC costLo,X           ; result if it is positive
+ STA addr
+ LDA cycleCount+1
+ SBC costHi,X
+
+ BMI wrow1              ; If we don't have enough cycles left, jump to wrow1
+
+ STA cycleCount+1
+ LDA addr
+ STA cycleCount
+
+ TYA                    ; Move Y on to the first column in the window, which
+ ADC winStart,X         ; is at winStart + 1 (the C flag is set, as the
+ TAY                    ; subtraction above didn't underflow)
+
+ LDA dataForPPU+1       ; Set the PPU address to match
+ ADC ppuToBuffNameHi,X
+ STA PPU_ADDR
+ STY PPU_ADDR
+
+ LDA winOff,X           ; Set addr(1 0) to the point in snam7 that sends the
+ STA addr               ; right number of entries (winOff contains the low byte
+ LDA #HI(snam7)         ; of the address, and the high byte is always the same)
+ STA addr+1
+
+ SEC                    ; Set the C flag, as the code after the sends in snam7
+                        ; expects it
+
+ JMP (addr)             ; Send the window and carry on with the next row
+
+.wrow2
+
+ JMP nrow12             ; Carry on as in the other variants
+
+.wrow1
+
+ JMP WinFailNTSC        ; We don't have enough cycles for the window, so jump to
+                        ; WinFailNTSC to send what we can of the row in batches
+                        ; of eight
+
+
+
+ IF P% < inventoryNTSC + 113     ; Pad with unused bytes so this
+  FOR I%, P%, inventoryNTSC + 113 - 1    ; block is the same size as
+   EQUB $FF                                 ; the original routine
+  NEXT
+ ENDIF
+
+ ASSERT P% = inventoryNTSC + 113
+
+ELSE
+
 .SendInventoryToPPU
 
  LDY #0                 ; Set Y as an index counter for the following block,
@@ -6966,6 +7632,8 @@ ENDIF
                         ; sent X batches of 16 bytes
 
  RTS                    ; Return from the subroutine
+
+ENDIF
 
 ; ******************************************************************************
 ;
@@ -19639,6 +20307,149 @@ ENDIF
 ;
 ; ******************************************************************************
 
+IF _NTSC_HW
+
+                        ; The NTSC hardware variant moves DV41 and DVID4 into
+                        ; ROM bank 1 (the only bank that calls them), and uses
+                        ; the space for the following routine
+
+.dvidNTSC
+
+; ******************************************************************************
+;
+;       Name: FlipCheckNTSC
+;       Type: Subroutine
+;   Category: Drawing the screen
+;    Summary: Record the time of the last bitplane flip, in constant time
+;             (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; This is called at the start of every NMI (from SetBudgetNTSC), before the
+; cycle budget is set, so it always takes the same number of cycles (27,
+; including the RTS).
+;
+; ******************************************************************************
+
+.FlipCheckNTSC
+
+ LDA hiddenBitplane     ; If hiddenBitplane hasn't changed since the last NMI,
+ CMP flipPrev           ; jump to fchk1
+ BEQ fchk1
+
+ STA flipPrev           ; Otherwise the bitplanes have flipped since the last
+ LDA nmiCounter         ; NMI, so record the new hidden bitplane and the time
+ STA lastFlipNMI        ; of the flip
+
+ RTS                    ; Return from the subroutine
+
+.fchk1
+
+ LDA nmiCounter         ; Waste the same number of cycles as the other path
+ LDA nmiCounter         ; (4 + 4 + 3 = 11 cycles)
+ BIT hiddenBitplane
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: TailEntryNTSC
+;       Type: Subroutine
+;   Category: Drawing the screen
+;    Summary: Subtract the cost of resuming a part-sent nametable row, and jump
+;             to SendNamesTail to send the rest of it (NTSC hardware variant
+;             only)
+;
+; ******************************************************************************
+
+.TailEntryNTSC
+
+ SUBTRACT_CYCLES TAIL_ENTRY_CYCLES  ; Subtract the cost of the row checks that
+                                    ; got us here, plus this routine
+
+ JMP SendNamesTail      ; Jump to SendNamesTail to send the rest of the row
+
+; ******************************************************************************
+;
+;       Name: BarFixNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Start the icon bar patterns in the next NMI, and add back the
+;             cycles that SendBarNamesToPPU overcharges (NTSC hardware variant
+;             only)
+;
+; ******************************************************************************
+
+.BarFixNTSC
+
+ LDA #2                 ; Set barPatternCounter to 2 so that SendBarPattsNTSC
+ STA barPatternCounter  ; starts the patterns in the next NMI
+
+ ADD_CYCLES_CLC BAR_FIX_CYCLES  ; SendBarNamesToPPU subtracts more cycles than
+                                ; it uses when no pattern batch gets sent, so
+                                ; add the difference back
+
+ RTS                    ; Return from the subroutine
+
+; ******************************************************************************
+;
+;       Name: WinFailNTSC
+;       Type: Subroutine
+;   Category: Drawing the screen
+;    Summary: Send what we can of a nametable row that doesn't fit through the
+;             column window (NTSC hardware variant only)
+;
+; ******************************************************************************
+
+.WinFailNTSC
+
+ LDA cycleCount         ; Subtract WIN_FAIL_CYCLES from the cycle count, for the
+ SEC                    ; checks we have already done
+ SBC #WIN_FAIL_CYCLES
+ STA cycleCount
+ BCS wfal1
+ DEC cycleCount+1
+
+.wfal1
+
+ LDA cycleCount+1       ; If the cycle count is now negative, jump to snam10 to
+ BMI wfal2              ; stop sending, as we may already have used up most of
+                        ; the margin that the NMI keeps after the cycle count
+                        ; runs out
+
+ JMP SendNamesTail      ; Otherwise jump to SendNamesTail to send what we can of
+                        ; the row in batches of eight
+
+.wfal2
+
+ JMP snam10             ; Stop sending for this VBlank
+
+; ******************************************************************************
+;
+;       Name: WinBailNTSC
+;       Type: Subroutine
+;   Category: Drawing the screen
+;    Summary: Stop sending nametable entries when we run out of cycles just
+;             before checking the column window (NTSC hardware variant only)
+;
+; ******************************************************************************
+
+.WinBailNTSC
+
+ SUBTRACT_CYCLES WIN_BAIL_CYCLES    ; Subtract the cost of the row checks that
+                                    ; got us here, which would normally be part
+                                    ; of the row's cost
+
+ JMP snam10             ; Stop sending for this VBlank
+
+ FOR I%, P%, dvidNTSC + $8D     ; Pad with unused bytes so this block is the
+  EQUB $FF                      ; same size as DV41 and DVID4 (142 bytes)
+ NEXT
+
+ ASSERT P% = dvidNTSC + $8E
+
+ELSE
+
 .DV41
 
  STA Q                  ; Store A in Q
@@ -19789,6 +20600,8 @@ ENDIF
  LDA antilogODD,X
  STA R
  RTS
+
+ENDIF
 
 ; ******************************************************************************
 ;
@@ -20804,9 +21617,10 @@ IF _NTSC_HW
                         ; one pattern batch was sent, so jump to bnam1 to return
                         ; from the subroutine
 
- LDA #2                 ; Otherwise the nametable entries were sent but none of
- STA barPatternCounter  ; the patterns, so set barPatternCounter to 2 so that
-                        ; SendBarPattsNTSC starts the patterns in the next NMI
+ JMP BarFixNTSC         ; Otherwise the nametable entries were sent but none of
+ NOP                    ; the patterns, so jump to BarFixNTSC to set
+                        ; barPatternCounter to 2 so that SendBarPattsNTSC
+                        ; starts the patterns in the next NMI
 
 .bnam1
 
@@ -20845,6 +21659,36 @@ IF _NTSC_HW
 
  JMP SendBarPattsToPPU  ; Jump to SendBarPattsToPPU to send the pattern data,
                         ; returning from the subroutine using a tail call
+
+; ******************************************************************************
+;
+;       Name: SetBudgetNTSC
+;       Type: Subroutine
+;   Category: PPU
+;    Summary: Set the cycle budget for the VBlank routine (NTSC hardware
+;             variant only)
+;
+; ******************************************************************************
+
+.SetBudgetNTSC
+
+ JSR FlipCheckNTSC      ; Record the time of any bitplane flip since the last
+                        ; NMI (this takes a fixed number of cycles)
+
+ LDA #LO(NMI_CYCLES_NTSC_HW)    ; Set (X A) to the normal budget
+ LDX #HI(NMI_CYCLES_NTSC_HW)
+
+ BIT earlyVBlank        ; If the VBlank routine is being run early, use the
+ BPL sbud1              ; larger budget instead
+ LDA #LO(NMI_CYCLES_EARLY)
+ LDX #HI(NMI_CYCLES_EARLY)
+
+.sbud1
+
+ STA cycleCount         ; Set cycleCount = (X A)
+ STX cycleCount+1
+
+ RTS
 
  FOR I%, P%, SendBarNamesNTSC + 52  ; Pad with unused bytes so this block is
   EQUB $FF                          ; the same size as in the NTSC variant
@@ -20902,6 +21746,221 @@ ENDIF
 ;
 ; ******************************************************************************
 
+.lineImageNTSC
+
+IF _NTSC_HW
+
+                        ; In the NTSC hardware variant, the line images live
+                        ; in bank 3 (the only bank that uses them), which frees
+                        ; up this block for the DMC timer code
+
+.dmcSilence
+
+ ASSERT (dmcSilence AND 63) = 0     ; DMC samples must start on a 64-byte boundary
+
+ FOR I%, 1, 49          ; A silent DMC sample of 49 zero bytes (the DMC output
+  EQUB 0                ; level only moves when it sees a 1 bit)
+ NEXT
+
+; ******************************************************************************
+;
+;       Name: IRQHandlerNTSC
+;       Type: Subroutine
+;   Category: Utility routines
+;    Summary: Use the DMC as a timer to start the VBlank routine early, just
+;             after the bottom of the picture (NTSC hardware variant only)
+;
+; ------------------------------------------------------------------------------
+;
+; The picture ends on scanline 232, but the NMI only arrives at scanline 241.
+; This routine starts the VBlank routine at the start of scanline 233 instead,
+; which gives it about 860 more cycles to send data to the PPU.
+;
+; The MMC1 has no scanline counter, so we use the APU's DMC channel as a timer.
+; It plays a silent sample and generates an interrupt when it fetches the last
+; byte. At the fastest rate it fetches a byte every 432 CPU cycles, on a fixed
+; grid, so once we know where that grid is relative to the screen, we know
+; exactly when each interrupt will arrive. Each frame goes like this:
+;
+;   * A 49-byte sample ends just before the sprite 0 hit at the top of the icon
+;     bar (scanline 158). This is the "sync" interrupt: it starts a 17-byte
+;     sample, then polls PPU_STATUS until the sprite 0 hit, which tells us
+;     exactly where the DMC grid is. It then does the icon bar split, and works
+;     out how many one-byte "hops" (432 cycles each) are needed after the
+;     17-byte sample, and the extra delay, to reach scanline 233.
+;
+;   * Each hop interrupt starts a one-byte sample.
+;
+;   * The final interrupt starts the 49-byte sample for the next frame, waits
+;     for the remaining cycles, turns off rendering on scanline 233, and runs
+;     the VBlank routine. The real NMI arrives part-way through and is ignored
+;     (see NMIEntryNTSC).
+;
+; At the start of the space view, the chain is started from the normal NMI
+; instead, and it only syncs when the first interrupt happens to arrive before
+; the sprite 0 hit, which takes up to about 16 frames as the DMC grid drifts
+; relative to the screen. If anything goes wrong, the chain stops and the next
+; NMI is handled normally.
+;
+; ******************************************************************************
+
+.IRQHandlerNTSC
+
+ PHA                    ; Store the registers on the stack
+ TXA
+ PHA
+ TYA
+ PHA
+
+ LDA irqStage           ; If irqStage = 0, jump to irqs1 to stop the chain
+ BEQ irqs1
+
+ LDA irqHops            ; If there are no hops left, jump to irqs14
+ BEQ irqs14
+
+ DEC irqHops            ; Start a one-byte sample, so the next interrupt comes
+ LDA #0                 ; 432 cycles after this one
+ STA DMC_LEN
+ LDA #%00011111
+ STA SND_CHN
+
+ JMP irqs2              ; Return from the interrupt handler
+
+.irqs14
+
+ LDA irqStage           ; If irqStage = 1, jump to irqs3 to sync, otherwise
+ CMP #1                 ; jump to irqs8 for the final interrupt
+ BEQ irqs3
+ JMP irqs8
+
+.irqs1
+
+ LDA #%00001111         ; Stop the DMC and clear its interrupt flag
+ STA SND_CHN
+
+.irqs2
+
+ PLA                    ; Restore the registers and return from the interrupt
+ TAY                    ; handler
+ PLA
+ TAX
+ PLA
+ RTI
+
+.irqs3
+
+                        ; Sync to the sprite 0 hit
+
+ LDA #1                 ; Start a 17-byte sample, so the next interrupt comes
+ STA DMC_LEN            ; exactly 17 * 432 cycles after this one
+ LDA #%00011111
+ STA SND_CHN
+
+ LDA #0                 ; Stop the chain at the next interrupt unless we sync
+ STA irqStage
+
+ LDA QQ11               ; Only in the space view
+ BNE irqs2
+
+ BIT barPatternCounter  ; If bit 7 of barPatternCounter is clear, the icon bar
+ BPL irqs2              ; is being sent to the PPU, and the sprite 0 hit isn't
+                        ; reliable, so stop the chain
+
+ LDX #0                 ; If the sprite 0 hit has already happened, we are too
+ BIT PPU_STATUS         ; late to sync, so return
+ BVS irqs2
+
+.irqs4
+
+ INX                    ; Poll PPU_STATUS until the sprite 0 hit, counting the
+ BEQ irqs2              ; iterations (11 cycles each) in X, and giving up if X
+ BIT PPU_STATUS         ; wraps round
+ BVC irqs4
+
+ LDA irqExpectX         ; If we know where to expect the sprite 0 hit (i.e.
+ CMP #$FF               ; irqExpectX is not $FF), check that X is within four
+ BEQ irqs16             ; of the expected value, and if not, stop the chain to
+ TXA                    ; be safe (the sprite 0 hit moves for a frame or two
+ SEC                    ; when the screen is being set up, for example)
+ SBC irqExpectX
+ ADC #3
+ CMP #9
+ BCS irqs2
+
+.irqs16
+
+ LDY #IRQ_SPLIT_DELAY   ; Wait until the bottom of the 3D view has been drawn
+
+.irqs5
+
+ DEY
+ BNE irqs5
+
+ LDA setupPPUForIconBar ; Switch to nametable 0 and pattern table 0 for the
+ BPL irqs6              ; icon bar, if required (this is what the
+ JSR SetPPUTablesTo0    ; SETUP_PPU_FOR_ICON_BAR macro does in the main loop)
+
+.irqs6
+
+ LDA irqExpectX         ; If this is the first sync after starting the chain,
+ CMP #$FF               ; set irqDry so we don't start the VBlank early until
+ BNE irqs17             ; the next IRQ_DRY_FRAMES syncs have all agreed with
+ LDA #IRQ_DRY_FRAMES    ; each other (the sprite 0 hit can move for a few
+ STA irqDry             ; frames while the screen is being set up)
+
+.irqs17
+
+ LDA #2                 ; The next interrupts are the hops and the final one
+ STA irqStage
+
+ JSR IrqTimingNTSC      ; Work out the number of hops and the final delay from
+                        ; the number of poll iterations in X
+
+ JMP irqs2              ; Return from the interrupt handler
+
+.irqs8
+
+                        ; The final interrupt
+
+ LDA #3                 ; Start the 49-byte sample for the next frame, so its
+ STA DMC_LEN            ; interrupt comes 49 * 432 cycles after this one, just
+ LDA #%00011111         ; before the next sprite 0 hit
+ STA SND_CHN
+
+ LDA #1                 ; The next interrupt syncs (with no hops first)
+ STA irqStage
+ LSR A
+ STA irqHops
+
+ LDA QQ11               ; Only start the VBlank early in the space view
+ BNE irqs2
+
+
+ JMP EarlyDelayNTSC     ; Wait until scanline 233 and start the VBlank routine
+
+.WinChargeNTSC
+
+ LDA cycleCount         ; Subtract WIN_FIX_CYCLES from the cycle count, for the
+ SEC                    ; cost of WinFixNTSC
+ SBC #WIN_FIX_CYCLES
+ STA cycleCount
+ BCS wchg1
+ DEC cycleCount+1
+
+.wchg1
+
+ RTS                    ; Return from the subroutine
+
+ IF P% < lineImageNTSC + 232        ; Pad with unused bytes so this block is the
+  FOR I%, P%, lineImageNTSC + 231   ; same size as the line images in the other
+   EQUB $FF                         ; variants (232 bytes)
+  NEXT
+ ENDIF
+
+ ASSERT P% = lineImageNTSC + 232
+
+ELSE
+
 .lineImage
 
  EQUB $FF, $00, $00, $00, $00, $00, $00, $00
@@ -20933,6 +21992,9 @@ ENDIF
  EQUB $C0, $C0, $C0, $00, $00, $00, $00, $00
  EQUB $00, $00, $00, $00, $00, $03, $03, $03
  EQUB $03, $03, $03, $00, $00, $00, $00, $00
+
+
+ENDIF
 
 ; ******************************************************************************
 ;
@@ -21150,11 +22212,23 @@ ENDIF
 ;
 ; ******************************************************************************
 
+IF _NTSC_HW
+
+ EQUW NMIEntryNTSC      ; Vector to the NMI handler
+
+ EQUW ResetMMC1_b7      ; Vector to the RESET handler
+
+ EQUW IRQHandlerNTSC    ; Vector to the IRQ/BRK handler
+
+ELSE
+
  EQUW NMI               ; Vector to the NMI handler
 
  EQUW ResetMMC1_b7      ; Vector to the RESET handler
 
  EQUW IRQ               ; Vector to the IRQ/BRK handler
+
+ENDIF
 
 ; ******************************************************************************
 ;
