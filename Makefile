@@ -12,6 +12,11 @@ PYTHON?=python
 #                         ntsc
 #                         ntsc-hw (NTSC variant fixed for real NTSC hardware)
 #
+#   shift=<lines>       Move the picture down by 0 to 7 scanlines in the
+#                       ntsc-hw variant, which gives the NMI handler that much
+#                       longer to send data to the PPU in each frame (default
+#                       0; see README-NTSC-HW.md)
+#
 #   commander=max       Start with a maxed-out commander
 #
 #   match=no            Do not attempt to match the original game binaries
@@ -41,6 +46,10 @@ PYTHON?=python
 #   TRUE  = Maxed-out commander
 #   FALSE = Standard commander
 #
+# _NTSC_HW_SHIFT
+#   0 to 7 = The number of scanlines to move the picture down in the ntsc-hw
+#            variant (has no effect on the other variants)
+#
 # _MATCH_ORIGINAL_BINARIES
 #   TRUE  = Match binaries to released version (i.e. fill workspaces with noise)
 #   FALSE = Zero-fill workspaces
@@ -57,6 +66,12 @@ ifeq ($(match), no)
   match-original-binaries=FALSE
 else
   match-original-binaries=TRUE
+endif
+
+ifeq ($(shift),)
+  ntsc-hw-shift=0
+else
+  ntsc-hw-shift=$(shift)
 endif
 
 ifeq ($(variant), ntsc)
@@ -80,6 +95,7 @@ all:
 	echo _VARIANT=$(variant-number) >> 1-source-files/main-sources/elite-build-options.asm
 	echo _MATCH_ORIGINAL_BINARIES=$(match-original-binaries) >> 1-source-files/main-sources/elite-build-options.asm
 	echo _MAX_COMMANDER=$(max-commander) >> 1-source-files/main-sources/elite-build-options.asm
+	echo _NTSC_HW_SHIFT=$(ntsc-hw-shift) >> 1-source-files/main-sources/elite-build-options.asm
 	$(BEEBASM) -i 1-source-files/main-sources/elite-source-header.asm -v > 3-assembled-output/compile.txt
 	$(BEEBASM) -i 1-source-files/main-sources/elite-source-common.asm -v >> 3-assembled-output/compile.txt
 ifeq ($(OS), Windows_NT)

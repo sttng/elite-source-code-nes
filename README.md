@@ -352,6 +352,8 @@ make variant=ntsc-hw
 
 This will produce a file called `ELITE-ntsc-hw.NES` in the `5-compiled-rom-images` folder. As this isn't an original release there are no reference binaries, so the build isn't verified. You can see all the changes by searching the source code for `_NTSC_HW`.
 
+Add `shift=6` to move the picture down six scanlines, which makes scenes with big ships noticeably faster. On a CRT this pushes the bottom of the dashboard into the overscan area. See [README-NTSC-HW.md](README-NTSC-HW.md) for details.
+
 The NMI handler in NES Elite blanks the screen, sends as much data to the PPU as its cycle budget allows, and then re-enables the screen at a fixed point. The PAL release has a 70-line VBlank and re-enables the screen on scanline 7 (hence the `YPAL` margin), while the NTSC variant's budget of 6797 cycles is nearly three times the length of a real NTSC VBlank (20 lines, about 2270 cycles), so on real hardware it re-enables the screen around scanline 50, which pushes the picture down the screen, breaks the icon bar split and loses the bottom of the dashboard.
 
 The NTSC hardware variant makes these changes to fit into the NTSC VBlank:
